@@ -416,6 +416,62 @@ if not closed.empty:
     
     st.dataframe(trade_display, use_container_width=True, hide_index=True, height=400)
 
+# ─── OPEN POSITIONS ───
+if not open_trades.empty:
+    st.markdown("### 📍 Open Positions")
+    
+    for _, trade in open_trades.iterrows():
+        direction = str(trade.get("direction", "?")).upper()
+        entry = trade.get("entry_price", 0)
+        edge = trade.get("edge_pct", 0)
+        market_id = trade.get("market_id", "")
+        time_opened = to_pst(trade.get("timestamp"))
+        
+        # Parse signal data for details
+        sig = trade.get("signal_data", {})
+        if isinstance(sig, str):
+            try:
+                sig = json.loads(sig)
+            except:
+                sig = {}
+        
+        emoji = "🟢" if direction == "UP" else "🔴"
+        border_color = "#00d4aa" if direction == "UP" else "#ff6b6b"
+        
+        st.markdown(f"""
+        <div style="
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-left: 4px solid {border_color};
+            border-radius: 12px;
+            padding: 16px 20px;
+            margin-bottom: 10px;
+        ">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+                <div>
+                    <span style="font-size:1.2rem;font-weight:600;color:#ccd6f6;">
+                        {emoji} {direction} @ ${entry:.3f}
+                    </span>
+                    <span style="color:#8892b0;font-size:0.85rem;margin-left:12px;">
+                        Edge: {edge:.1f}%
+                    </span>
+                </div>
+                <div style="text-align:right;">
+                    <span style="color:#8892b0;font-size:0.8rem;">{time_opened}</span>
+                </div>
+            </div>
+            <div style="margin-top:8px;color:#8892b0;font-size:0.8rem;">
+                Market: {market_id} &nbsp;|&nbsp;
+                Mom: {sig.get('momentum', 0):+.2f} &nbsp;|&nbsp;
+                Trend: {sig.get('trend', 0):+.2f} &nbsp;|&nbsp;
+                OB: {sig.get('orderbook', 0):+.2f} &nbsp;|&nbsp;
+                Vol: {sig.get('volatility_regime', 'N/A')}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    st.markdown("---")
+
 # ─── STRATEGY PARAMS ───
 with st.expander("⚙️ Strategy Configuration"):
     params_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "best_params.json")
