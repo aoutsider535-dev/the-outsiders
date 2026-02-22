@@ -172,21 +172,43 @@ def load_trades(limit=500):
     return df
 
 
-def load_equity_curve():
+def load_equity_curve(strategy_filter=None, resolution_filter=None):
     conn = get_connection()
-    rows = conn.execute("""
-        SELECT timestamp, pnl,
+    query = """
+        SELECT timestamp, pnl, strategy, exit_reason,
                SUM(pnl) OVER (ORDER BY timestamp) as cumulative_pnl
         FROM trades WHERE status='closed'
-        ORDER BY timestamp
-    """).fetchall()
+    """
+    params = []
+    conditions = []
+    if strategy_filter and strategy_filter != "All":
+        conditions.append("strategy = ?")
+        params.append(strategy_filter)
+    if resolution_filter == "Real Only":
+        conditions.append("(exit_reason LIKE '%_real' OR exit_reason LIKE 'backtest_%')")
+    elif resolution_filter == "Real Paper Only":
+        conditions.append("exit_reason LIKE '%_real'")
+    if conditions:
+        query += " AND " + " AND ".join(conditions)
+    query += " ORDER BY timestamp"
+    
+    rows = conn.execute(query, params).fetchall()
     conn.close()
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame([dict(r) for r in rows])
+    # Recalculate cumulative P&L for filtered data
+    df["cumulative_pnl"] = df["pnl"].cumsum()
     df["time_pst"] = pd.to_datetime(df["timestamp"], unit="s", utc=True).dt.tz_convert("US/Pacific")
     df["balance"] = 1000 + df["cumulative_pnl"]
     return df
+
+
+def get_strategy_list():
+    conn = get_connection()
+    rows = conn.execute("SELECT DISTINCT strategy FROM trades ORDER BY strategy").fetchall()
+    conn.close()
+    return ["All"] + [r["strategy"] for r in rows]
 
 
 def check_paper_trader_running():
@@ -221,6 +243,17 @@ with col_status:
 
 st.markdown("---")
 
+# ─── FILTERS ───
+filter_col1, filter_col2, filter_col3 = st.columns([2, 2, 4])
+with filter_col1:
+    strategy_options = get_strategy_list()
+    selected_strategy = st.selectbox("Strategy", strategy_options, index=0)
+with filter_col2:
+    resolution_options = ["All Trades", "Real Only", "Real Paper Only"]
+    selected_resolution = st.selectbox("Resolution", resolution_options, 
+                                        index=2,  # Default to real paper only
+                                        help="Real Paper Only = verified Polymarket outcomes")
+
 # Load data
 df = load_trades()
 
@@ -236,8 +269,17 @@ if df.empty:
     """, unsafe_allow_html=True)
     st.stop()
 
-closed = df[df["status"] == "closed"] if "status" in df.columns else df
+all_closed = df[df["status"] == "closed"] if "status" in df.columns else df
 open_trades = df[df["status"] == "open"] if "status" in df.columns else pd.DataFrame()
+
+# Apply filters
+closed = all_closed.copy()
+if selected_strategy != "All" and "strategy" in closed.columns:
+    closed = closed[closed["strategy"] == selected_strategy]
+if selected_resolution == "Real Only" and "exit_reason" in closed.columns:
+    closed = closed[closed["exit_reason"].str.contains("_real|backtest_", na=False)]
+elif selected_resolution == "Real Paper Only" and "exit_reason" in closed.columns:
+    closed = closed[closed["exit_reason"].str.contains("_real", na=False)]
 
 # ─── KPI ROW ───
 total_trades = len(closed)
@@ -267,7 +309,10 @@ else:
 st.markdown("---")
 
 # ─── EQUITY CURVE ───
-equity = load_equity_curve()
+equity = load_equity_curve(
+    strategy_filter=selected_strategy,
+    resolution_filter=selected_resolution if selected_resolution != "All Trades" else None
+)
 if not equity.empty:
     fig_equity = go.Figure()
     
