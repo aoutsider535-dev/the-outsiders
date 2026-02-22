@@ -10,7 +10,7 @@ import os
 import signal
 import sys
 from datetime import datetime, timezone
-from src.data.polymarket import get_full_market_snapshot, find_upcoming_markets
+from src.data.polymarket import get_full_market_snapshot, find_upcoming_markets, check_market_resolution
 from src.data.price_feed import get_recent_candles, fetch_kraken_ticker, fetch_kraken_orderbook
 from src.strategies.btc_5min import generate_signal, format_signal_message
 from src.database import init_db, insert_trade, close_trade, get_trades, get_performance_summary
@@ -206,49 +206,47 @@ class PaperTrader:
                 f"Risk: ${risk_amount:.2f} | Edge: {signal.edge_pct:.1f}%")
     
     def _check_open_trade(self, current_snapshot):
-        """Check if an open trade should be resolved."""
+        """Check if an open trade should be resolved using REAL Polymarket outcomes."""
         if not self.open_trade:
             return
         
-        # The trade resolves when the window ends
-        # For paper trading, we check if the market has moved to a new window
-        if current_snapshot["slug"] == self.open_trade["market_slug"]:
-            return  # Same window, still open
-        
-        # Window has changed — resolve the trade
-        # Check the outcome by looking at the old market
         trade = self.open_trade
         
-        # In a real scenario, we'd check if our market resolved Up or Down
-        # For paper trading, we use Kraken price to determine the outcome
-        # (same as what Chainlink would report)
-        ticker = fetch_kraken_ticker()
+        # Same window = still open
+        if current_snapshot["slug"] == trade["market_slug"]:
+            return
         
-        # Simple resolution: if we bet "up" and price went up since trade, we win
-        # This is approximate — real resolution uses Chainlink BTC/USD
-        # For now, we'll use the market's final outcome prices
-        # The old market should now be closed, let's check
-        from src.data.polymarket import find_btc_5min_market
+        # Window changed — check real resolution from Polymarket
+        resolution = check_market_resolution(trade["market_slug"])
         
-        # Actually for paper trading, let's just resolve based on whether
-        # the next market's movement supports our direction
-        # This is a simplification - in live mode we'd check actual resolution
+        if resolution is None:
+            self.log(f"⚠️ Could not check resolution for {trade['market_slug']}, retrying next tick...")
+            return
         
-        # Simulate: ~50% base + our edge should give us our expected win rate
-        import random
-        win_probability = trade.get("confidence", 0.5) if hasattr(trade, "get") else 0.5
-        # Use the signal's confidence as actual probability (simplified)
-        won = random.random() < min(win_probability, 0.6)  # cap at 60% to be conservative
+        if not resolution.get("resolved"):
+            # Market hasn't resolved yet, wait
+            self.log(f"⏳ Waiting for {trade['market_slug']} to resolve...")
+            return
+        
+        # REAL resolution from Polymarket/Chainlink
+        actual_winner = resolution.get("winner")  # "up" or "down"
+        
+        if actual_winner is None:
+            self.log(f"⚠️ Market resolved but winner unknown for {trade['market_slug']}")
+            self.open_trade = None
+            return
+        
+        won = (trade["direction"] == actual_winner)
         
         if won:
             pnl = trade["risk_amount"] * (self.params["take_profit_pct"] / 100)
             pnl_pct = self.params["take_profit_pct"]
-            exit_reason = "win"
+            exit_reason = "win_real"
             self.wins += 1
         else:
             pnl = -trade["risk_amount"] * (self.params["stop_loss_pct"] / 100)
             pnl_pct = -self.params["stop_loss_pct"]
-            exit_reason = "loss"
+            exit_reason = "loss_real"
             self.losses += 1
         
         self.balance += pnl
@@ -258,7 +256,9 @@ class PaperTrader:
         close_trade(trade["id"], 1.0 if won else 0.0, pnl, pnl_pct, exit_reason)
         
         emoji = "✅" if won else "❌"
-        self.log(f"{emoji} RESOLVED: {trade['direction'].upper()} | "
+        self.log(f"{emoji} REAL RESULT: We bet {trade['direction'].upper()}, "
+                f"market resolved {actual_winner.upper()} | "
+                f"{'WON' if won else 'LOST'} | "
                 f"PnL: ${pnl:+.2f} ({pnl_pct:+.1f}%) | "
                 f"Balance: ${self.balance:,.2f} | "
                 f"Record: {self.wins}W-{self.losses}L")
