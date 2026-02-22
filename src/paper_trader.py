@@ -47,13 +47,14 @@ class PaperTrader:
         self.balance = balance
         self.initial_balance = balance
         self.params = params or load_params()
-        self.open_trade = None
+        self.open_trades = []  # List of open trades (max 3)
+        self.max_open_trades = 3
         self.trade_count = 0
         self.wins = 0
         self.losses = 0
         self.total_pnl = 0.0
         self.running = True
-        self.last_market_slug = None
+        self.traded_slugs = set()  # Track which windows we've already traded
         
         init_db()
         
@@ -106,8 +107,11 @@ class PaperTrader:
             return
         
         # Skip if we already traded this window
-        if snapshot["slug"] == self.last_market_slug:
+        if snapshot["slug"] in self.traded_slugs:
             return
+        
+        # Check all open trades for resolution
+        self._check_open_trades(snapshot)
         
         # Get Kraken price data for our strategy
         candles = get_recent_candles(minutes=self.params["lookback_minutes"])
@@ -123,7 +127,6 @@ class PaperTrader:
         up_ob = snapshot.get("up_orderbook")
         down_ob = snapshot.get("down_orderbook")
         if up_ob and down_ob:
-            # Construct orderbook signal from Polymarket data
             orderbook_data = {
                 "imbalance": snapshot.get("ob_imbalance", 0),
                 "bid_depth": up_ob["bid_depth"],
@@ -142,22 +145,27 @@ class PaperTrader:
             timestamp=int(time.time()),
         )
         
-        # Check if we have an open trade to resolve
-        if self.open_trade:
-            self._check_open_trade(snapshot)
-        
         # Log the signal
         self.log(f"📊 {snapshot['title']}")
         self.log(f"   Polymarket: Up={snapshot['up_price']:.3f} | Down={snapshot['down_price']:.3f}")
         if ticker:
             self.log(f"   BTC: ${ticker['last']:,.2f}")
         self.log(f"   {format_signal_message(sig)}")
+        if self.open_trades:
+            self.log(f"   📍 Open positions: {len(self.open_trades)}/{self.max_open_trades}")
         
-        # Execute paper trade if signal is strong enough
-        if sig.should_trade and not self.open_trade:
+        # Execute paper trade if signal is strong enough and we have capacity
+        can_trade = len(self.open_trades) < self.max_open_trades
+        total_risk_pct = sum(t["risk_amount"] for t in self.open_trades) / self.balance * 100 if self.open_trades else 0
+        
+        if sig.should_trade and can_trade and total_risk_pct < 15:
             self._execute_paper_trade(sig, snapshot)
+        elif sig.should_trade and not can_trade:
+            self.log(f"   ⚠️ Signal detected but at max positions ({self.max_open_trades})")
+        elif sig.should_trade and total_risk_pct >= 15:
+            self.log(f"   ⚠️ Signal detected but risk cap reached ({total_risk_pct:.1f}% >= 15%)")
         
-        self.last_market_slug = snapshot["slug"]
+        self.traded_slugs.add(snapshot["slug"])
     
     def _execute_paper_trade(self, signal, snapshot):
         """Execute a simulated trade."""
@@ -190,7 +198,7 @@ class PaperTrader:
         
         trade_id = insert_trade(trade_data)
         
-        self.open_trade = {
+        self.open_trades.append({
             "id": trade_id,
             "direction": signal.direction,
             "entry_price": entry_price,
@@ -198,72 +206,77 @@ class PaperTrader:
             "risk_amount": risk_amount,
             "market_slug": snapshot["slug"],
             "window_end_ts": snapshot["window_end_ts"],
-        }
+        })
         
         emoji = "🟢" if signal.direction == "up" else "🔴"
         self.log(f"{emoji} PAPER TRADE: BUY {signal.direction.upper()} "
                 f"@ ${entry_price:.3f} | Qty: {quantity:.1f} | "
                 f"Risk: ${risk_amount:.2f} | Edge: {signal.edge_pct:.1f}%")
     
-    def _check_open_trade(self, current_snapshot):
-        """Check if an open trade should be resolved using REAL Polymarket outcomes."""
-        if not self.open_trade:
+    def _check_open_trades(self, current_snapshot):
+        """Check all open trades for resolution using REAL Polymarket outcomes."""
+        if not self.open_trades:
             return
         
-        trade = self.open_trade
+        resolved_indices = []
         
-        # Same window = still open
-        if current_snapshot["slug"] == trade["market_slug"]:
-            return
+        for i, trade in enumerate(self.open_trades):
+            # Same window = still open
+            if current_snapshot["slug"] == trade["market_slug"]:
+                continue
+            
+            # Check real resolution from Polymarket
+            resolution = check_market_resolution(trade["market_slug"])
+            
+            if resolution is None:
+                self.log(f"⚠️ Could not check resolution for {trade['market_slug']}")
+                continue
+            
+            if not resolution.get("resolved"):
+                self.log(f"⏳ Waiting for {trade['market_slug']} to resolve...")
+                continue
+            
+            # REAL resolution from Polymarket/Chainlink
+            actual_winner = resolution.get("winner")
+            
+            if actual_winner is None:
+                self.log(f"⚠️ Market resolved but winner unknown for {trade['market_slug']}")
+                resolved_indices.append(i)
+                continue
+            
+            won = (trade["direction"] == actual_winner)
+            
+            if won:
+                pnl = trade["risk_amount"] * (self.params["take_profit_pct"] / 100)
+                pnl_pct = self.params["take_profit_pct"]
+                exit_reason = "win_real"
+                self.wins += 1
+            else:
+                pnl = -trade["risk_amount"] * (self.params["stop_loss_pct"] / 100)
+                pnl_pct = -self.params["stop_loss_pct"]
+                exit_reason = "loss_real"
+                self.losses += 1
+            
+            self.balance += pnl
+            self.total_pnl += pnl
+            self.trade_count += 1
+            
+            close_trade(trade["id"], 1.0 if won else 0.0, pnl, pnl_pct, exit_reason)
+            
+            emoji = "✅" if won else "❌"
+            self.log(f"{emoji} REAL RESULT: We bet {trade['direction'].upper()}, "
+                    f"market resolved {actual_winner.upper()} | "
+                    f"{'WON' if won else 'LOST'} | "
+                    f"PnL: ${pnl:+.2f} ({pnl_pct:+.1f}%) | "
+                    f"Balance: ${self.balance:,.2f} | "
+                    f"Record: {self.wins}W-{self.losses}L | "
+                    f"Open: {len(self.open_trades) - len(resolved_indices) - 1}")
+            
+            resolved_indices.append(i)
         
-        # Window changed — check real resolution from Polymarket
-        resolution = check_market_resolution(trade["market_slug"])
-        
-        if resolution is None:
-            self.log(f"⚠️ Could not check resolution for {trade['market_slug']}, retrying next tick...")
-            return
-        
-        if not resolution.get("resolved"):
-            # Market hasn't resolved yet, wait
-            self.log(f"⏳ Waiting for {trade['market_slug']} to resolve...")
-            return
-        
-        # REAL resolution from Polymarket/Chainlink
-        actual_winner = resolution.get("winner")  # "up" or "down"
-        
-        if actual_winner is None:
-            self.log(f"⚠️ Market resolved but winner unknown for {trade['market_slug']}")
-            self.open_trade = None
-            return
-        
-        won = (trade["direction"] == actual_winner)
-        
-        if won:
-            pnl = trade["risk_amount"] * (self.params["take_profit_pct"] / 100)
-            pnl_pct = self.params["take_profit_pct"]
-            exit_reason = "win_real"
-            self.wins += 1
-        else:
-            pnl = -trade["risk_amount"] * (self.params["stop_loss_pct"] / 100)
-            pnl_pct = -self.params["stop_loss_pct"]
-            exit_reason = "loss_real"
-            self.losses += 1
-        
-        self.balance += pnl
-        self.total_pnl += pnl
-        self.trade_count += 1
-        
-        close_trade(trade["id"], 1.0 if won else 0.0, pnl, pnl_pct, exit_reason)
-        
-        emoji = "✅" if won else "❌"
-        self.log(f"{emoji} REAL RESULT: We bet {trade['direction'].upper()}, "
-                f"market resolved {actual_winner.upper()} | "
-                f"{'WON' if won else 'LOST'} | "
-                f"PnL: ${pnl:+.2f} ({pnl_pct:+.1f}%) | "
-                f"Balance: ${self.balance:,.2f} | "
-                f"Record: {self.wins}W-{self.losses}L")
-        
-        self.open_trade = None
+        # Remove resolved trades (reverse order to preserve indices)
+        for i in sorted(resolved_indices, reverse=True):
+            self.open_trades.pop(i)
     
     def _print_summary(self):
         """Print final paper trading summary."""
