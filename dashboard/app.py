@@ -1,5 +1,5 @@
 """
-🕶️ The Outsiders — Trading Dashboard v2
+🏞 The Outsiders — Trading Dashboard v2
 Modern dark theme, PST timezone, real-time paper trading view.
 """
 import streamlit as st
@@ -17,8 +17,8 @@ from src.database import get_connection, init_db, get_trades, get_performance_su
 PST = timezone(timedelta(hours=-8))
 
 st.set_page_config(
-    page_title="🕶️ The Outsiders",
-    page_icon="🕶️",
+    page_title="🏞 The Outsiders",
+    page_icon="🏞",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
@@ -202,7 +202,7 @@ def check_paper_trader_running():
 # ─── HEADER ───
 col_header, col_status = st.columns([4, 1])
 with col_header:
-    st.markdown("# 🕶️ The Outsiders")
+    st.markdown("# 🏞 The Outsiders")
     st.markdown('<p class="outsiders-tagline">Not insiders. Just smarter.</p>', unsafe_allow_html=True)
 
 with col_status:
@@ -294,7 +294,7 @@ if not equity.empty:
         ),
         yaxis=dict(
             title="Balance ($)", tickprefix="$", gridcolor="rgba(255,255,255,0.03)",
-            tickfont=dict(color="#8892b0"), titlefont=dict(color="#8892b0"),
+            tickfont=dict(color="#8892b0"), title_font=dict(color="#8892b0"),
         ),
         template="plotly_dark",
         paper_bgcolor="rgba(0,0,0,0)",
@@ -443,7 +443,7 @@ st.markdown("---")
 now_pst = datetime.now(timezone.utc).astimezone(PST).strftime("%b %d, %Y %I:%M %p PST")
 st.markdown(
     f'<div style="text-align:center;color:#495670;font-size:0.8rem;padding:10px 0;">'
-    f'🕶️ The Outsiders v2 — Jakob & Austin | Last refresh: {now_pst}'
+    f'🏞 The Outsiders v2 — Jakob & Austin | Last refresh: {now_pst}'
     f'</div>',
     unsafe_allow_html=True
 )
