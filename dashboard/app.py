@@ -517,6 +517,31 @@ if not open_trades.empty:
     
     st.markdown("---")
 
+# ─── PENDING RESOLUTION ───
+pending_trades = df[(df["status"] == "open")] if "status" in df.columns else pd.DataFrame()
+if not pending_trades.empty:
+    st.markdown("### ⏳ Pending Resolution")
+    st.markdown('<p style="color:#8892b0;font-size:0.85rem;margin-top:-10px;">'
+                'Trades waiting for Polymarket/Chainlink to confirm the outcome</p>',
+                unsafe_allow_html=True)
+    
+    pending_display = pd.DataFrame()
+    if "timestamp" in pending_trades.columns:
+        pending_display["Time (PST)"] = pending_trades["timestamp"].apply(to_pst)
+    if "market_id" in pending_trades.columns:
+        pending_display["Market"] = pending_trades["market_id"]
+    if "direction" in pending_trades.columns:
+        pending_display["Direction"] = pending_trades["direction"].apply(
+            lambda x: f"🟢 {x.upper()}" if x == "up" else f"🔴 {x.upper()}"
+        )
+    if "entry_price" in pending_trades.columns:
+        pending_display["Entry"] = pending_trades["entry_price"].apply(lambda x: f"${x:.3f}" if pd.notna(x) else "")
+    if "edge_pct" in pending_trades.columns:
+        pending_display["Edge"] = pending_trades["edge_pct"].apply(lambda x: f"{x:.1f}%" if pd.notna(x) else "")
+    
+    st.dataframe(pending_display, use_container_width=True, hide_index=True)
+    st.markdown("---")
+
 # ─── STRATEGY PARAMS ───
 with st.expander("⚙️ Strategy Configuration"):
     params_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "best_params.json")
