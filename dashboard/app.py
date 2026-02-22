@@ -15,8 +15,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from src.database import get_connection, init_db, get_trades, get_performance_summary
 
 st.set_page_config(
-    page_title="🤖 Austin's Trading Bot",
-    page_icon="🤖",
+    page_title="🕶️ The Outsiders",
+    page_icon="🕶️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -57,7 +57,7 @@ def load_equity_curve():
 
 
 # ─── SIDEBAR ───
-st.sidebar.title("🤖 Austin's Bot")
+st.sidebar.title("🕶️ The Outsiders")
 st.sidebar.markdown("---")
 
 strategy_filter = st.sidebar.selectbox("Strategy", ["All", "btc_5min"])
@@ -69,8 +69,8 @@ st.sidebar.markdown("**Status:** 🟢 Online" if True else "**Status:** 🔴 Off
 st.sidebar.markdown(f"**Last Update:** {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}")
 
 # ─── MAIN ───
-st.title("🤖 Polymarket Trading Dashboard")
-st.markdown("*BTC 5-Min Up/Down Strategy — by Austin the ClawdBot*")
+st.title("🕶️ The Outsiders — Trading Dashboard")
+st.markdown("*Not insiders. Just smarter.*")
 
 # Load data
 df = load_trades()
@@ -178,4 +178,4 @@ if params_rows:
     st.dataframe(display_params, use_container_width=True, hide_index=True)
 
 st.markdown("---")
-st.markdown("*Built by Austin 🤖 | Polymarket Trading Bot v0.1*")
+st.markdown("*🕶️ The Outsiders v0.1 — Jakob & Austin*")
