@@ -25,7 +25,7 @@ from typing import Optional
 
 DEFAULT_PARAMS = {
     "lookback_minutes": 15,
-    "min_edge_pct": 3.0,
+    "min_edge_pct": 10.0,
     "take_profit_pct": 65.0,
     "stop_loss_pct": 22.0,
     "risk_per_trade_pct": 5.0,
@@ -283,13 +283,17 @@ def generate_signal(candles, orderbook_data=None, market_up_price=0.5,
         signal.edge_pct = (prob - market_down_price) * 100
     
     min_edge = params["min_edge_pct"]
-    if signal.edge_pct >= min_edge:
+    min_confidence = params.get("min_confidence", 0.59)
+    if signal.edge_pct >= min_edge and signal.confidence >= min_confidence:
         signal.should_trade = True
         signal.reason = (f"Smart Money: Edge {signal.edge_pct:.1f}% >= {min_edge}% | "
                         f"Score: {raw_score:+.3f} | "
                         f"Value: {signal.cheap_side} ({signal.value_score:+.2f}) | "
                         f"Trend: {signal.btc_trend_dir} ({signal.trend_score:+.2f}) | "
                         f"BTC: {signal.btc_change_pct:+.3f}%")
+    elif signal.edge_pct >= min_edge and signal.confidence < min_confidence:
+        signal.reason = (f"Edge OK but confidence {signal.confidence:.1%} < {min_confidence:.0%} | "
+                        f"Score: {raw_score:+.3f}")
     else:
         signal.reason = (f"Edge {signal.edge_pct:.1f}% < {min_edge}% | "
                         f"Score: {raw_score:+.3f} | "

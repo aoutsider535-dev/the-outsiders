@@ -393,6 +393,55 @@ with tab_live:
         
         st.markdown("<br>", unsafe_allow_html=True)
         
+        # ─── Strategy Filter ───
+        all_strats = sorted(closed_live["strategy"].unique().tolist()) if "strategy" in closed_live.columns else []
+        strat_labels_map = {s: strategy_label(s) for s in all_strats}
+        
+        filter_col1, filter_col2, filter_col3 = st.columns([3, 2, 2])
+        with filter_col1:
+            selected_strategies = st.multiselect(
+                "📊 Filter by Strategy",
+                options=all_strats,
+                default=all_strats,
+                format_func=lambda x: strat_labels_map.get(x, x),
+                key="live_strat_filter"
+            )
+        with filter_col2:
+            min_edge_filter = st.slider("Min Edge %", 0.0, 20.0, 0.0, 0.5, key="live_edge_filter")
+        with filter_col3:
+            min_conf_filter = st.slider("Min Confidence", 0.50, 0.80, 0.50, 0.01, key="live_conf_filter")
+        
+        # Apply filters
+        if selected_strategies:
+            filtered_live = closed_live[closed_live["strategy"].isin(selected_strategies)]
+        else:
+            filtered_live = closed_live
+        
+        if min_edge_filter > 0 and "edge_pct" in filtered_live.columns:
+            filtered_live = filtered_live[filtered_live["edge_pct"] >= min_edge_filter]
+        if min_conf_filter > 0.5 and "confidence" in filtered_live.columns:
+            filtered_live = filtered_live[filtered_live["confidence"] >= min_conf_filter]
+        
+        # Show filter summary
+        if len(filtered_live) != len(closed_live):
+            f_wins = len(filtered_live[filtered_live["pnl"] > 0]) if len(filtered_live) > 0 else 0
+            f_losses = len(filtered_live) - f_wins
+            f_wr = (f_wins / len(filtered_live) * 100) if len(filtered_live) > 0 else 0
+            f_pnl = filtered_live["pnl"].sum() if len(filtered_live) > 0 else 0
+            wr_color = "#00ff88" if f_wr >= 50 else "#ff6b6b"
+            pnl_color_f = "#00ff88" if f_pnl >= 0 else "#ff6b6b"
+            st.markdown(f"""
+            <div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:12px 20px;margin:10px 0;border:1px solid rgba(255,255,255,0.1);">
+                <b style="color:#a29bfe;">🔍 Filtered:</b> 
+                <span style="color:#fff;">{len(filtered_live)}/{len(closed_live)} trades</span> · 
+                <span style="color:#fff;">{f_wins}W/{f_losses}L</span> · 
+                <span style="color:{wr_color};">{f_wr:.1f}% WR</span> · 
+                <span style="color:{pnl_color_f};">${f_pnl:+.2f} P&L</span>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+        
         # Strategy Comparison
         if total_trades > 0:
             st.markdown("### 🏆 Strategy Performance")
@@ -462,7 +511,12 @@ with tab_live:
         # Recent Trades
         st.markdown("### 📋 Live Trade History")
         
-        all_live = df_live.head(50).copy()
+        # Apply strategy filter to trade history
+        if selected_strategies:
+            display_df = df_live[df_live["strategy"].isin(selected_strategies)].head(50).copy()
+        else:
+            display_df = df_live.head(50).copy()
+        all_live = display_df
         for _, trade in all_live.iterrows():
             direction = str(trade.get("direction", "?")).upper()
             entry = trade.get("entry_price", 0)

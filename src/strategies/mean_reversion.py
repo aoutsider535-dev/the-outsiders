@@ -21,7 +21,7 @@ from typing import Optional
 
 DEFAULT_PARAMS = {
     "lookback_minutes": 20,
-    "min_edge_pct": 3.5,
+    "min_edge_pct": 5.0,
     "take_profit_pct": 60.0,
     "stop_loss_pct": 25.0,
     "risk_per_trade_pct": 5.0,
@@ -280,11 +280,20 @@ def generate_signal(candles, orderbook_data=None, market_up_price=0.5,
     
     # Should we trade?
     min_edge = params["min_edge_pct"]
-    if signal.edge_pct >= min_edge:
+    min_confidence = params.get("min_confidence", 0.55)
+    # Mean reversion: data shows higher edge = LOWER win rate, so cap max edge too
+    max_edge = params.get("max_edge_pct", 12.0)
+    if signal.edge_pct >= min_edge and signal.confidence >= min_confidence and signal.edge_pct <= max_edge:
         signal.should_trade = True
         signal.reason = (f"Mean reversion: Edge {signal.edge_pct:.1f}% >= {min_edge}% | "
                         f"Score: {raw_score:+.3f} | RSI: {rsi:.0f} | "
                         f"Dev: {signal.price_deviation_pct:+.3f}%")
+    elif signal.edge_pct > max_edge:
+        signal.reason = (f"Edge {signal.edge_pct:.1f}% > {max_edge}% max (overextended) | "
+                        f"Score: {raw_score:+.3f} | RSI: {rsi:.0f}")
+    elif signal.confidence < min_confidence:
+        signal.reason = (f"Confidence {signal.confidence:.1%} < {min_confidence:.0%} | "
+                        f"Score: {raw_score:+.3f} | RSI: {rsi:.0f}")
     else:
         signal.reason = (f"Edge {signal.edge_pct:.1f}% < {min_edge}% | "
                         f"Score: {raw_score:+.3f} | RSI: {rsi:.0f}")
