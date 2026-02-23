@@ -21,7 +21,7 @@ from typing import Optional
 # Default strategy parameters
 DEFAULT_PARAMS = {
     "lookback_minutes": 15,
-    "min_edge_pct": 8.0,
+    "min_edge_pct": 7.0,
     "take_profit_pct": 40.0,
     "stop_loss_pct": 50.0,
     "risk_per_trade_pct": 5.0,

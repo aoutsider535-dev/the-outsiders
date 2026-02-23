@@ -111,7 +111,7 @@ class StrategyState:
 
 
 class LiveTrader:
-    def __init__(self, trade_size=5.0, max_per_strategy=3, max_total=12):
+    def __init__(self, trade_size=5.0, max_per_strategy=5, max_total=15):
         self.trade_size = trade_size  # USD per trade
         self.max_per_strategy = max_per_strategy
         self.max_total = max_total

@@ -1,7 +1,7 @@
 {
   "params": {
     "lookback_minutes": 15,
-    "min_edge_pct": 8.0,
+    "min_edge_pct": 7.0,
     "take_profit_pct": 60.0,
     "stop_loss_pct": 30.0,
     "risk_per_trade_pct": 5.0,
@@ -33,5 +33,6 @@
     "final_balance": 2574.41,
     "data_points": 720,
     "windows_analyzed": 141
-  }
+  },
+  "min_edge_pct": 7.0
 }
