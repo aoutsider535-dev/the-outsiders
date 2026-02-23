@@ -1,0 +1,37 @@
+{
+  "params": {
+    "lookback_minutes": 15,
+    "min_edge_pct": 8.0,
+    "take_profit_pct": 60.0,
+    "stop_loss_pct": 30.0,
+    "risk_per_trade_pct": 5.0,
+    "max_open_trades": 1,
+    "w_momentum": 0.45,
+    "w_trend": 0.315,
+    "w_last_candle": 0.09,
+    "w_orderbook": 0.045,
+    "w_volatility": 0.1,
+    "vol_low_threshold": 0.0005,
+    "vol_high_threshold": 0.002,
+    "momentum_strong_threshold": 0.6
+  },
+  "metrics": {
+    "total_trades": 100,
+    "wins": 55,
+    "losses": 45,
+    "win_rate": 55.00000000000001,
+    "total_pnl": 1574.41,
+    "total_pnl_pct": 157.44,
+    "avg_pnl": 15.74,
+    "avg_win": 49.46,
+    "avg_loss": -25.47,
+    "best_trade": 77.28,
+    "worst_trade": -39.8,
+    "max_drawdown_pct": 8.73,
+    "sharpe_ratio": 141.2,
+    "avg_edge": 5.98,
+    "final_balance": 2574.41,
+    "data_points": 720,
+    "windows_analyzed": 141
+  }
+}
