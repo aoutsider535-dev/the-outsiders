@@ -1,10 +1,9 @@
 """
-🏞 The Outsiders — Trading Dashboard v2
-Modern dark theme, PST timezone, real-time paper trading view.
+🏞 The Outsiders — Trading Dashboard v4
+Dual-tab: LIVE (bright modern) + Paper (dark classic)
 """
 import streamlit as st
 import plotly.graph_objects as go
-import plotly.express as px
 import pandas as pd
 import sys
 import os
@@ -12,9 +11,61 @@ import json
 from datetime import datetime, timezone, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from src.database import get_connection, init_db, get_trades, get_performance_summary
+from src.database import get_connection, init_db, get_trades
 
 PST = timezone(timedelta(hours=-8))
+LIVE_STARTING_BALANCE = 105.16  # Actual starting deposit on Polymarket
+PAPER_STARTING_BALANCE = 1000.0
+
+
+def get_live_balance():
+    """Fetch real USDC balance from Polymarket CLOB API."""
+    try:
+        from dotenv import dotenv_values
+        from py_clob_client.client import ClobClient
+        from py_clob_client.clob_types import BalanceAllowanceParams
+        env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
+        config = dotenv_values(env_path)
+        pk = config.get("POLYGON_PRIVATE_KEY", "")
+        addr = config.get("POLYGON_WALLET_ADDRESS", "")
+        if not pk or not addr:
+            return None
+        host = "https://clob.polymarket.com"
+        client = ClobClient(host, key=pk, chain_id=137)
+        creds = client.create_or_derive_api_creds()
+        client = ClobClient(host, key=pk, chain_id=137, creds=creds,
+                           signature_type=1, funder=addr)
+        bal = client.get_balance_allowance(
+            BalanceAllowanceParams(asset_type="COLLATERAL")
+        )
+        raw = int(bal.get("balance", 0))
+        return raw / 1e6
+    except Exception:
+        return None
+
+STRATEGY_COLORS = {
+    "btc_5min_momentum_LIVE": "#00ff88",
+    "btc_5min_meanrev_LIVE": "#ffb347",
+    "btc_5min_ob_imbalance_LIVE": "#a29bfe",
+    "btc_5min_smart_money_LIVE": "#fd79a8",
+    "btc_5min_momentum": "#00d4aa",
+    "btc_5min_v3_paper": "#00d4aa",
+    "btc_5min_meanrev": "#ff9f43",
+    "btc_5min_ob_imbalance": "#6c5ce7",
+    "btc_5min_smart_money": "#e84393",
+}
+
+STRATEGY_LABELS = {
+    "btc_5min_momentum_LIVE": "⚡ Momentum",
+    "btc_5min_meanrev_LIVE": "🔄 Mean Reversion",
+    "btc_5min_ob_imbalance_LIVE": "📊 OB Imbalance",
+    "btc_5min_smart_money_LIVE": "🧠 Smart Money",
+    "btc_5min_momentum": "⚡ Momentum",
+    "btc_5min_v3_paper": "⚡ Momentum (v1)",
+    "btc_5min_meanrev": "🔄 Mean Reversion",
+    "btc_5min_ob_imbalance": "📊 OB Imbalance",
+    "btc_5min_smart_money": "🧠 Smart Money",
+}
 
 st.set_page_config(
     page_title="🏞 The Outsiders",
@@ -23,144 +74,47 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Custom CSS for modern dark look
-st.markdown("""
-<style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-    
-    .stApp {
-        font-family: 'Inter', sans-serif;
-    }
-    
-    /* Dark card style */
-    div[data-testid="stMetric"] {
-        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-        border: 1px solid rgba(255,255,255,0.08);
-        border-radius: 16px;
-        padding: 20px;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-    }
-    
-    div[data-testid="stMetric"] label {
-        color: #8892b0 !important;
-        font-size: 0.85rem !important;
-        font-weight: 500 !important;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-    }
-    
-    div[data-testid="stMetric"] [data-testid="stMetricValue"] {
-        font-size: 1.8rem !important;
-        font-weight: 700 !important;
-    }
-    
-    /* Header styling */
-    h1 {
-        font-weight: 700 !important;
-        letter-spacing: -0.02em !important;
-    }
-    
-    /* Sidebar */
-    section[data-testid="stSidebar"] {
-        background: #0a0a1a;
-        border-right: 1px solid rgba(255,255,255,0.05);
-    }
-    
-    /* Tables */
-    .stDataFrame {
-        border-radius: 12px;
-        overflow: hidden;
-    }
-    
-    /* Status pill */
-    .status-live {
-        display: inline-block;
-        background: #00d4aa;
-        color: #000;
-        padding: 4px 12px;
-        border-radius: 20px;
-        font-size: 0.75rem;
-        font-weight: 600;
-        letter-spacing: 0.05em;
-        animation: pulse 2s infinite;
-    }
-    
-    @keyframes pulse {
-        0%, 100% { opacity: 1; }
-        50% { opacity: 0.7; }
-    }
-    
-    .status-offline {
-        display: inline-block;
-        background: #ff6b6b;
-        color: #fff;
-        padding: 4px 12px;
-        border-radius: 20px;
-        font-size: 0.75rem;
-        font-weight: 600;
-    }
-    
-    /* Divider */
-    hr {
-        border-color: rgba(255,255,255,0.06) !important;
-        margin: 1.5rem 0 !important;
-    }
-    
-    .outsiders-tagline {
-        color: #8892b0;
-        font-size: 1rem;
-        font-weight: 300;
-        font-style: italic;
-        margin-top: -10px;
-    }
-    
-    .trade-ticker {
-        font-family: 'SF Mono', 'Fira Code', monospace;
-        font-size: 0.85rem;
-        color: #ccd6f6;
-        background: rgba(255,255,255,0.03);
-        padding: 8px 14px;
-        border-radius: 8px;
-        border-left: 3px solid #00d4aa;
-        margin: 4px 0;
-    }
-    
-    .trade-ticker.loss {
-        border-left-color: #ff6b6b;
-    }
-</style>
-""", unsafe_allow_html=True)
-
 init_db()
 
 
 def to_pst(ts):
-    """Convert unix timestamp to PST datetime string."""
     if pd.isna(ts) or ts is None:
         return ""
     try:
         dt = datetime.fromtimestamp(int(ts), tz=timezone.utc).astimezone(PST)
-        return dt.strftime("%b %d, %I:%M:%S %p PST")
+        return dt.strftime("%b %d, %I:%M:%S %p")
     except:
         return str(ts)
 
 
-def to_pst_short(ts):
-    """Short PST format for charts."""
-    if pd.isna(ts) or ts is None:
-        return ""
+def strategy_label(name):
+    return STRATEGY_LABELS.get(name, name)
+
+
+def strategy_color(name):
+    return STRATEGY_COLORS.get(name, "#8892b0")
+
+
+def check_trader_running(name="paper_trader"):
     try:
-        dt = datetime.fromtimestamp(int(ts), tz=timezone.utc).astimezone(PST)
-        return dt.strftime("%I:%M %p")
+        import subprocess
+        result = subprocess.run(["pgrep", "-f", name], capture_output=True, text=True)
+        return result.returncode == 0
     except:
-        return str(ts)
+        return False
 
 
-def load_trades(limit=500):
-    trades = get_trades(limit=limit)
-    if not trades:
+def load_trades_filtered(is_live=False, limit=500):
+    conn = get_connection()
+    if is_live:
+        query = "SELECT * FROM trades WHERE strategy LIKE '%_LIVE' ORDER BY timestamp DESC LIMIT ?"
+    else:
+        query = "SELECT * FROM trades WHERE strategy NOT LIKE '%_LIVE' ORDER BY timestamp DESC LIMIT ?"
+    rows = conn.execute(query, (limit,)).fetchall()
+    conn.close()
+    if not rows:
         return pd.DataFrame()
-    df = pd.DataFrame(trades)
+    df = pd.DataFrame([dict(r) for r in rows])
     if "timestamp" in df.columns:
         df["time_utc"] = pd.to_datetime(df["timestamp"], unit="s", utc=True)
         df["time_pst"] = df["time_utc"].dt.tz_convert("US/Pacific")
@@ -172,404 +126,523 @@ def load_trades(limit=500):
     return df
 
 
-def load_equity_curve(strategy_filter=None, resolution_filter=None):
+def load_equity(is_live=False, starting_balance=1000.0):
     conn = get_connection()
-    query = """
-        SELECT timestamp, pnl, strategy, exit_reason,
-               SUM(pnl) OVER (ORDER BY timestamp) as cumulative_pnl
-        FROM trades WHERE status='closed'
-    """
-    params = []
-    conditions = []
-    if strategy_filter and strategy_filter != "All":
-        conditions.append("strategy = ?")
-        params.append(strategy_filter)
-    if resolution_filter == "Real Only":
-        conditions.append("(exit_reason LIKE '%_real' OR exit_reason LIKE 'backtest_%')")
-    elif resolution_filter == "Real Paper Only":
-        conditions.append("exit_reason LIKE '%_real'")
-    if conditions:
-        query += " AND " + " AND ".join(conditions)
-    query += " ORDER BY timestamp"
-    
-    rows = conn.execute(query, params).fetchall()
+    if is_live:
+        query = "SELECT timestamp, pnl, strategy, exit_reason FROM trades WHERE status='closed' AND strategy LIKE '%_LIVE' ORDER BY timestamp"
+    else:
+        query = "SELECT timestamp, pnl, strategy, exit_reason FROM trades WHERE status='closed' AND strategy NOT LIKE '%_LIVE' AND exit_reason LIKE '%_real' ORDER BY timestamp"
+    rows = conn.execute(query).fetchall()
     conn.close()
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame([dict(r) for r in rows])
-    # Recalculate cumulative P&L for filtered data
     df["cumulative_pnl"] = df["pnl"].cumsum()
     df["time_pst"] = pd.to_datetime(df["timestamp"], unit="s", utc=True).dt.tz_convert("US/Pacific")
-    df["balance"] = 1000 + df["cumulative_pnl"]
+    df["balance"] = starting_balance + df["cumulative_pnl"]
+    df["strategy_label"] = df["strategy"].apply(strategy_label)
     return df
 
 
-def get_strategy_list():
-    conn = get_connection()
-    rows = conn.execute("SELECT DISTINCT strategy FROM trades ORDER BY strategy").fetchall()
-    conn.close()
-    return ["All"] + [r["strategy"] for r in rows]
+# ─── LIVE TAB CSS ───
+LIVE_CSS = """
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap');
+    
+    .live-header {
+        background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%);
+        border-radius: 20px;
+        padding: 30px;
+        margin-bottom: 20px;
+        border: 1px solid rgba(255,255,255,0.1);
+        box-shadow: 0 8px 32px rgba(0,255,136,0.1);
+    }
+    
+    .live-title {
+        font-family: 'Space Grotesk', sans-serif;
+        font-size: 2.5rem;
+        font-weight: 700;
+        background: linear-gradient(135deg, #00ff88 0%, #00d4aa 50%, #a29bfe 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        letter-spacing: -0.02em;
+    }
+    
+    .live-subtitle {
+        font-family: 'Space Grotesk', sans-serif;
+        color: #a0a0c0;
+        font-size: 1.1rem;
+        font-weight: 300;
+        margin-top: -5px;
+    }
+    
+    .live-badge {
+        display: inline-block;
+        background: linear-gradient(135deg, #00ff88, #00d4aa);
+        color: #000;
+        padding: 6px 16px;
+        border-radius: 25px;
+        font-size: 0.8rem;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        animation: glow 2s ease-in-out infinite;
+    }
+    
+    @keyframes glow {
+        0%, 100% { box-shadow: 0 0 10px rgba(0,255,136,0.3); }
+        50% { box-shadow: 0 0 25px rgba(0,255,136,0.6); }
+    }
+    
+    .live-metric {
+        background: linear-gradient(135deg, #1a1a3e 0%, #2d2b55 100%);
+        border: 1px solid rgba(0,255,136,0.15);
+        border-radius: 16px;
+        padding: 20px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    }
+    
+    .live-metric-value {
+        font-family: 'Space Grotesk', sans-serif;
+        font-size: 2rem;
+        font-weight: 700;
+        color: #fff;
+    }
+    
+    .live-metric-label {
+        font-family: 'Space Grotesk', sans-serif;
+        color: #a0a0c0;
+        font-size: 0.8rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+    }
+    
+    .win-text { color: #00ff88 !important; }
+    .loss-text { color: #ff6b6b !important; }
+    
+    .strategy-card {
+        background: linear-gradient(135deg, #1a1a3e 0%, #2d2b55 100%);
+        border-radius: 16px;
+        padding: 18px;
+        border: 1px solid rgba(255,255,255,0.08);
+        margin-bottom: 8px;
+    }
+    
+    .trade-row {
+        font-family: 'Space Grotesk', monospace;
+        padding: 10px 14px;
+        border-radius: 10px;
+        margin: 4px 0;
+        font-size: 0.9rem;
+    }
+    
+    .trade-win {
+        background: rgba(0,255,136,0.08);
+        border-left: 3px solid #00ff88;
+        color: #e0e0ff;
+    }
+    
+    .trade-loss {
+        background: rgba(255,107,107,0.08);
+        border-left: 3px solid #ff6b6b;
+        color: #e0e0ff;
+    }
+    
+    .trade-open {
+        background: rgba(162,155,254,0.08);
+        border-left: 3px solid #a29bfe;
+        color: #e0e0ff;
+    }
+</style>
+"""
 
+# ─── PAPER TAB CSS ───
+PAPER_CSS = """
+<style>
+    div[data-testid="stMetric"] {
+        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 16px;
+        padding: 20px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    }
+    div[data-testid="stMetric"] label {
+        color: #8892b0 !important;
+        font-size: 0.85rem !important;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+    div[data-testid="stMetric"] [data-testid="stMetricValue"] {
+        font-size: 1.8rem !important;
+        font-weight: 700 !important;
+    }
+</style>
+"""
 
-def check_paper_trader_running():
-    """Check if paper trader process is alive."""
-    try:
-        import subprocess
-        result = subprocess.run(["pgrep", "-f", "paper_trader"], capture_output=True, text=True)
-        return result.returncode == 0
-    except:
-        return False
+# ─── MAIN LAYOUT ───
+tab_live, tab_paper = st.tabs(["💰 LIVE TRADING", "📝 Paper Trading"])
 
-
-# ─── HEADER ───
-col_header, col_status = st.columns([4, 1])
-with col_header:
-    st.markdown("# 🏞 The Outsiders")
-    st.markdown('<p class="outsiders-tagline">Not insiders. Just smarter.</p>', unsafe_allow_html=True)
-
-with col_status:
-    is_live = check_paper_trader_running()
+# ════════════════════════════════════════════
+# 💰 LIVE TAB
+# ════════════════════════════════════════════
+with tab_live:
+    st.markdown(LIVE_CSS, unsafe_allow_html=True)
+    
+    # Header
+    is_live = check_trader_running("live_trader")
     now_pst = datetime.now(timezone.utc).astimezone(PST).strftime("%I:%M %p PST")
-    if is_live:
-        st.markdown(f'<div style="text-align:right;padding-top:20px;">'
-                    f'<span class="status-live">● LIVE</span><br>'
-                    f'<span style="color:#8892b0;font-size:0.8rem;">{now_pst}</span>'
-                    f'</div>', unsafe_allow_html=True)
-    else:
-        st.markdown(f'<div style="text-align:right;padding-top:20px;">'
-                    f'<span class="status-offline">● OFFLINE</span><br>'
-                    f'<span style="color:#8892b0;font-size:0.8rem;">{now_pst}</span>'
-                    f'</div>', unsafe_allow_html=True)
-
-st.markdown("---")
-
-# ─── FILTERS ───
-filter_col1, filter_col2, filter_col3 = st.columns([2, 2, 4])
-with filter_col1:
-    strategy_options = get_strategy_list()
-    selected_strategy = st.selectbox("Strategy", strategy_options, index=0)
-with filter_col2:
-    resolution_options = ["All Trades", "Real Only", "Real Paper Only"]
-    selected_resolution = st.selectbox("Resolution", resolution_options, 
-                                        index=2,  # Default to real paper only
-                                        help="Real Paper Only = verified Polymarket outcomes")
-
-# Load data
-df = load_trades()
-
-if df.empty:
-    st.markdown("""
-    <div style="text-align:center;padding:60px 0;">
-        <h2 style="color:#8892b0;">📭 No trades yet</h2>
-        <p style="color:#495670;">Run the paper trader or backtester to see results here.</p>
-        <code style="background:#1a1a2e;padding:10px 20px;border-radius:8px;color:#00d4aa;">
-        python3 -m src.paper_trader
-        </code>
-    </div>
-    """, unsafe_allow_html=True)
-    st.stop()
-
-all_closed = df[df["status"] == "closed"] if "status" in df.columns else df
-open_trades = df[df["status"] == "open"] if "status" in df.columns else pd.DataFrame()
-
-# Apply filters
-closed = all_closed.copy()
-if selected_strategy != "All" and "strategy" in closed.columns:
-    closed = closed[closed["strategy"] == selected_strategy]
-if selected_resolution == "Real Only" and "exit_reason" in closed.columns:
-    closed = closed[closed["exit_reason"].str.contains("_real|backtest_", na=False)]
-elif selected_resolution == "Real Paper Only" and "exit_reason" in closed.columns:
-    closed = closed[closed["exit_reason"].str.contains("_real", na=False)]
-
-# ─── KPI ROW ───
-total_trades = len(closed)
-wins = len(closed[closed["pnl"] > 0]) if "pnl" in closed.columns and total_trades > 0 else 0
-losses = total_trades - wins
-win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
-total_pnl = closed["pnl"].sum() if "pnl" in closed.columns and total_trades > 0 else 0
-avg_edge = closed["edge_pct"].mean() if "edge_pct" in closed.columns and not closed["edge_pct"].isna().all() else 0
-balance = 1000 + total_pnl
-
-col1, col2, col3, col4, col5, col6 = st.columns(6)
-
-col1.metric("Balance", f"${balance:,.2f}", f"{((balance-1000)/1000*100):+.1f}%")
-col2.metric("Total P&L", f"${total_pnl:+,.2f}")
-col3.metric("Trades", f"{total_trades}", f"{wins}W / {losses}L")
-col4.metric("Win Rate", f"{win_rate:.1f}%")
-col5.metric("Avg Edge", f"{avg_edge:.1f}%")
-
-# Live trade indicator
-if not open_trades.empty:
-    latest = open_trades.iloc[0]
-    direction = latest.get("direction", "?").upper()
-    col6.metric("Open Trade", f"📍 {direction}", f"@ ${latest.get('entry_price', 0):.3f}")
-else:
-    col6.metric("Open Trade", "None", "Waiting for edge")
-
-st.markdown("---")
-
-# ─── EQUITY CURVE ───
-equity = load_equity_curve(
-    strategy_filter=selected_strategy,
-    resolution_filter=selected_resolution if selected_resolution != "All Trades" else None
-)
-if not equity.empty:
-    fig_equity = go.Figure()
     
-    # Add gradient area
-    fig_equity.add_trace(go.Scatter(
-        x=equity["time_pst"], y=equity["balance"],
-        mode="lines",
-        name="Balance",
-        line=dict(color="#00d4aa", width=2.5),
-        fill="tozeroy",
-        fillcolor="rgba(0,212,170,0.08)",
-    ))
+    badge = '<span class="live-badge">● LIVE</span>' if is_live else '<span style="background:#ff6b6b;color:#fff;padding:6px 16px;border-radius:25px;font-size:0.8rem;font-weight:700;">● OFFLINE</span>'
     
-    # Add starting balance reference line
-    fig_equity.add_hline(y=1000, line_dash="dot", line_color="rgba(255,255,255,0.15)",
-                         annotation_text="Starting $1,000", annotation_position="bottom right",
-                         annotation_font_color="rgba(255,255,255,0.3)")
-    
-    fig_equity.update_layout(
-        title=dict(text="Equity Curve", font=dict(size=18, color="#ccd6f6")),
-        xaxis=dict(
-            title="", gridcolor="rgba(255,255,255,0.03)",
-            tickfont=dict(color="#8892b0"),
-        ),
-        yaxis=dict(
-            title="Balance ($)", tickprefix="$", gridcolor="rgba(255,255,255,0.03)",
-            tickfont=dict(color="#8892b0"), title_font=dict(color="#8892b0"),
-        ),
-        template="plotly_dark",
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(10,10,26,0.5)",
-        height=380,
-        margin=dict(l=60, r=20, t=50, b=40),
-        showlegend=False,
-    )
-    st.plotly_chart(fig_equity, use_container_width=True)
-
-# ─── CHARTS ROW ───
-col_left, col_mid, col_right = st.columns(3)
-
-with col_left:
-    if "pnl_pct" in closed.columns and total_trades > 0:
-        colors = ["#00d4aa" if x > 0 else "#ff6b6b" for x in closed["pnl_pct"].fillna(0)]
-        fig_pnl = go.Figure(go.Bar(
-            x=list(range(len(closed))),
-            y=closed["pnl_pct"].fillna(0),
-            marker_color=colors,
-            opacity=0.85,
-        ))
-        fig_pnl.update_layout(
-            title=dict(text="Trade Returns (%)", font=dict(size=14, color="#ccd6f6")),
-            xaxis=dict(title="Trade #", gridcolor="rgba(255,255,255,0.03)", tickfont=dict(color="#8892b0")),
-            yaxis=dict(title="P&L %", gridcolor="rgba(255,255,255,0.03)", tickfont=dict(color="#8892b0"),
-                      ticksuffix="%"),
-            template="plotly_dark",
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(10,10,26,0.5)",
-            height=280,
-            margin=dict(l=50, r=10, t=40, b=40),
-            showlegend=False,
-        )
-        st.plotly_chart(fig_pnl, use_container_width=True)
-
-with col_mid:
-    if "direction" in closed.columns and total_trades > 0:
-        dir_counts = closed["direction"].value_counts()
-        fig_dir = go.Figure(go.Pie(
-            labels=dir_counts.index.str.upper(),
-            values=dir_counts.values,
-            hole=0.6,
-            marker=dict(colors=["#00d4aa", "#ff6b6b"]),
-            textfont=dict(color="#ccd6f6", size=13),
-        ))
-        fig_dir.update_layout(
-            title=dict(text="Direction Split", font=dict(size=14, color="#ccd6f6")),
-            template="plotly_dark",
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(10,10,26,0.5)",
-            height=280,
-            margin=dict(l=10, r=10, t=40, b=10),
-            legend=dict(font=dict(color="#8892b0")),
-        )
-        st.plotly_chart(fig_dir, use_container_width=True)
-
-with col_right:
-    if total_trades > 0:
-        fig_wr = go.Figure(go.Indicator(
-            mode="gauge+number",
-            value=win_rate,
-            number=dict(suffix="%", font=dict(size=36, color="#ccd6f6")),
-            gauge=dict(
-                axis=dict(range=[0, 100], tickfont=dict(color="#8892b0")),
-                bar=dict(color="#00d4aa"),
-                bgcolor="rgba(255,255,255,0.03)",
-                borderwidth=0,
-                steps=[
-                    dict(range=[0, 44], color="rgba(255,107,107,0.15)"),
-                    dict(range=[44, 55], color="rgba(255,255,255,0.03)"),
-                    dict(range=[55, 100], color="rgba(0,212,170,0.15)"),
-                ],
-                threshold=dict(line=dict(color="#ff6b6b", width=2), thickness=0.8, value=44),
-            ),
-        ))
-        fig_wr.update_layout(
-            title=dict(text="Win Rate", font=dict(size=14, color="#ccd6f6")),
-            template="plotly_dark",
-            paper_bgcolor="rgba(0,0,0,0)",
-            height=280,
-            margin=dict(l=30, r=30, t=50, b=10),
-        )
-        st.plotly_chart(fig_wr, use_container_width=True)
-
-st.markdown("---")
-
-# ─── RECENT TRADES ───
-st.markdown("### 📋 Recent Trades")
-
-if not closed.empty:
-    display = closed.head(30).copy()
-    
-    # Build clean display dataframe
-    trade_display = pd.DataFrame()
-    
-    if "time_display" in display.columns:
-        trade_display["Time (PST)"] = display["time_display"]
-    if "strategy" in display.columns:
-        trade_display["Strategy"] = display["strategy"].apply(
-            lambda x: "📡 Paper" if "paper" in str(x) else "🧪 Backtest" if "backtest" in str(x).lower() or "btc_5min" in str(x) else str(x)
-        )
-    if "direction" in display.columns:
-        trade_display["Direction"] = display["direction"].apply(
-            lambda x: f"🟢 {x.upper()}" if x == "up" else f"🔴 {x.upper()}"
-        )
-    if "entry_price" in display.columns:
-        trade_display["Entry"] = display["entry_price"].apply(lambda x: f"${x:.3f}" if pd.notna(x) else "")
-    if "pnl" in display.columns:
-        trade_display["P&L"] = display["pnl"].apply(lambda x: f"${x:+.2f}" if pd.notna(x) else "")
-    if "pnl_pct" in display.columns:
-        trade_display["Return"] = display["pnl_pct"].apply(lambda x: f"{x:+.1f}%" if pd.notna(x) else "")
-    if "edge_pct" in display.columns:
-        trade_display["Edge"] = display["edge_pct"].apply(lambda x: f"{x:.1f}%" if pd.notna(x) else "")
-    if "exit_reason" in display.columns:
-        trade_display["Result"] = display["exit_reason"].apply(
-            lambda x: "✅ Win" if "win" in str(x) else "❌ Loss" if "loss" in str(x) else str(x) if pd.notna(x) else ""
-        )
-    
-    st.dataframe(trade_display, use_container_width=True, hide_index=True, height=400)
-
-# ─── OPEN POSITIONS ───
-if not open_trades.empty:
-    st.markdown("### 📍 Open Positions")
-    
-    for _, trade in open_trades.iterrows():
-        direction = str(trade.get("direction", "?")).upper()
-        entry = trade.get("entry_price", 0)
-        edge = trade.get("edge_pct", 0)
-        market_id = trade.get("market_id", "")
-        time_opened = to_pst(trade.get("timestamp"))
-        
-        # Parse signal data for details
-        sig = trade.get("signal_data", {})
-        if isinstance(sig, str):
-            try:
-                sig = json.loads(sig)
-            except:
-                sig = {}
-        
-        emoji = "🟢" if direction == "UP" else "🔴"
-        border_color = "#00d4aa" if direction == "UP" else "#ff6b6b"
-        
-        st.markdown(f"""
-        <div style="
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-            border: 1px solid rgba(255,255,255,0.08);
-            border-left: 4px solid {border_color};
-            border-radius: 12px;
-            padding: 16px 20px;
-            margin-bottom: 10px;
-        ">
-            <div style="display:flex;justify-content:space-between;align-items:center;">
-                <div>
-                    <span style="font-size:1.2rem;font-weight:600;color:#ccd6f6;">
-                        {emoji} {direction} @ ${entry:.3f}
-                    </span>
-                    <span style="color:#8892b0;font-size:0.85rem;margin-left:12px;">
-                        Edge: {edge:.1f}%
-                    </span>
-                </div>
-                <div style="text-align:right;">
-                    <span style="color:#8892b0;font-size:0.8rem;">{time_opened}</span>
-                </div>
+    st.markdown(f"""
+    <div class="live-header">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div>
+                <div class="live-title">🏞 The Outsiders</div>
+                <div class="live-subtitle">Real money. Real edge. Not insiders — just smarter.</div>
             </div>
-            <div style="margin-top:8px;color:#8892b0;font-size:0.8rem;">
-                Market: {market_id} &nbsp;|&nbsp;
-                Mom: {sig.get('momentum', 0):+.2f} &nbsp;|&nbsp;
-                Trend: {sig.get('trend', 0):+.2f} &nbsp;|&nbsp;
-                OB: {sig.get('orderbook', 0):+.2f} &nbsp;|&nbsp;
-                Vol: {sig.get('volatility_regime', 'N/A')}
+            <div style="text-align:right;">
+                {badge}<br>
+                <span style="color:#a0a0c0;font-size:0.8rem;">{now_pst}</span>
             </div>
         </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Load live data
+    df_live = load_trades_filtered(is_live=True)
+    
+    if df_live.empty:
+        st.markdown("""
+        <div style="text-align:center;padding:60px 0;">
+            <h2 style="color:#a0a0c0;">🚀 No live trades yet</h2>
+            <p style="color:#606080;">The live trader is warming up...</p>
+        </div>
         """, unsafe_allow_html=True)
+    else:
+        closed_live = df_live[df_live["status"] == "closed"] if "status" in df_live.columns else df_live
+        open_live = df_live[df_live["status"] == "open"] if "status" in df_live.columns else pd.DataFrame()
+        
+        total_trades = len(closed_live)
+        wins = len(closed_live[closed_live["pnl"] > 0]) if "pnl" in closed_live.columns and total_trades > 0 else 0
+        losses = total_trades - wins
+        win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
+        # Use real Polymarket balance if available, fall back to DB calculation
+        real_balance = get_live_balance()
+        if real_balance is not None:
+            balance = real_balance
+            total_pnl = balance - LIVE_STARTING_BALANCE
+        else:
+            total_pnl = closed_live["pnl"].sum() if "pnl" in closed_live.columns and total_trades > 0 else 0
+            balance = LIVE_STARTING_BALANCE + total_pnl
+        roi = ((balance - LIVE_STARTING_BALANCE) / LIVE_STARTING_BALANCE) * 100
+        
+        # KPI Row
+        k1, k2, k3, k4, k5, k6 = st.columns(6)
+        
+        pnl_color = "win-text" if total_pnl >= 0 else "loss-text"
+        
+        k1.markdown(f"""
+        <div class="live-metric">
+            <div class="live-metric-label">Balance</div>
+            <div class="live-metric-value {'win-text' if balance >= LIVE_STARTING_BALANCE else 'loss-text'}">${balance:,.2f}</div>
+            <div style="color:#a0a0c0;font-size:0.8rem;">{roi:+.1f}% ROI</div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        k2.markdown(f"""
+        <div class="live-metric">
+            <div class="live-metric-label">Total P&L</div>
+            <div class="live-metric-value {pnl_color}">${total_pnl:+,.2f}</div>
+            <div style="color:#a0a0c0;font-size:0.8rem;">from ${LIVE_STARTING_BALANCE:.0f} start</div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        k3.markdown(f"""
+        <div class="live-metric">
+            <div class="live-metric-label">Record</div>
+            <div class="live-metric-value">{wins}W / {losses}L</div>
+            <div style="color:#a0a0c0;font-size:0.8rem;">{total_trades} total trades</div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        k4.markdown(f"""
+        <div class="live-metric">
+            <div class="live-metric-label">Win Rate</div>
+            <div class="live-metric-value {'win-text' if win_rate >= 50 else 'loss-text'}">{win_rate:.1f}%</div>
+            <div style="color:#a0a0c0;font-size:0.8rem;">target: 50%+</div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        k5.markdown(f"""
+        <div class="live-metric">
+            <div class="live-metric-label">Open Positions</div>
+            <div class="live-metric-value" style="color:#a29bfe;">{len(open_live)}</div>
+            <div style="color:#a0a0c0;font-size:0.8rem;">awaiting resolution</div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        active_strats = len(set(open_live["strategy"])) if not open_live.empty and "strategy" in open_live.columns else 0
+        k6.markdown(f"""
+        <div class="live-metric">
+            <div class="live-metric-label">Active Strategies</div>
+            <div class="live-metric-value" style="color:#ffb347;">{active_strats}/4</div>
+            <div style="color:#a0a0c0;font-size:0.8rem;">trading now</div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        # Strategy Comparison
+        if total_trades > 0:
+            st.markdown("### 🏆 Strategy Performance")
+            strat_names = closed_live["strategy"].unique()
+            cols = st.columns(len(strat_names)) if len(strat_names) > 0 else []
+            
+            for i, sname in enumerate(strat_names):
+                s_df = closed_live[closed_live["strategy"] == sname]
+                s_trades = len(s_df)
+                s_wins = len(s_df[s_df["pnl"] > 0])
+                s_losses = s_trades - s_wins
+                s_wr = (s_wins / s_trades * 100) if s_trades > 0 else 0
+                s_pnl = s_df["pnl"].sum()
+                color = strategy_color(sname)
+                pnl_c = "#00ff88" if s_pnl >= 0 else "#ff6b6b"
+                
+                with cols[i]:
+                    st.markdown(f"""
+                    <div class="strategy-card" style="border-top: 3px solid {color};">
+                        <div style="font-size:1.1rem;font-weight:600;color:#fff;margin-bottom:8px;">
+                            {strategy_label(sname)}
+                        </div>
+                        <div style="color:#a0a0c0;font-size:0.85rem;line-height:2;">
+                            Record: <b style="color:#fff">{s_wins}W/{s_losses}L</b><br>
+                            Win Rate: <b style="color:{'#00ff88' if s_wr >= 50 else '#ff6b6b'}">{s_wr:.0f}%</b><br>
+                            P&L: <b style="color:{pnl_c}">${s_pnl:+.2f}</b>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        # Equity Curve
+        equity = load_equity(is_live=True, starting_balance=LIVE_STARTING_BALANCE)
+        if not equity.empty:
+            fig = go.Figure()
+            
+            # Combined line
+            fig.add_trace(go.Scatter(
+                x=equity["time_pst"], y=equity["balance"],
+                mode="lines+markers", name="Balance",
+                line=dict(color="#00ff88", width=3),
+                marker=dict(size=6, color=["#00ff88" if p > 0 else "#ff6b6b" for p in equity["pnl"]]),
+                fill="tozeroy",
+                fillcolor="rgba(0,255,136,0.06)",
+            ))
+            
+            fig.add_hline(y=LIVE_STARTING_BALANCE, line_dash="dot", 
+                         line_color="rgba(255,255,255,0.2)",
+                         annotation_text=f"Start ${LIVE_STARTING_BALANCE:.0f}",
+                         annotation_position="bottom right",
+                         annotation_font_color="rgba(255,255,255,0.4)")
+            
+            fig.update_layout(
+                title=dict(text="💰 Live Equity Curve", font=dict(size=20, color="#fff", family="Space Grotesk")),
+                xaxis=dict(title="", gridcolor="rgba(255,255,255,0.03)", tickfont=dict(color="#a0a0c0")),
+                yaxis=dict(title="Balance ($)", tickprefix="$", gridcolor="rgba(255,255,255,0.03)",
+                          tickfont=dict(color="#a0a0c0"), title_font=dict(color="#a0a0c0")),
+                template="plotly_dark",
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(15,12,41,0.5)",
+                height=400, margin=dict(l=60, r=20, t=50, b=40),
+                showlegend=False,
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        
+        # Recent Trades
+        st.markdown("### 📋 Live Trade History")
+        
+        all_live = df_live.head(50).copy()
+        for _, trade in all_live.iterrows():
+            direction = str(trade.get("direction", "?")).upper()
+            entry = trade.get("entry_price", 0)
+            pnl = trade.get("pnl")
+            pnl_pct = trade.get("pnl_pct")
+            status = trade.get("status", "")
+            strat = trade.get("strategy", "")
+            time_str = to_pst(trade.get("timestamp"))
+            edge = trade.get("edge_pct", 0)
+            
+            emoji_dir = "🟢" if direction == "UP" else "🔴"
+            color = strategy_color(strat)
+            
+            if status == "closed" and pnl is not None:
+                if pnl > 0:
+                    css_class = "trade-win"
+                    result = f"✅ WON ${pnl:+.2f} ({pnl_pct:+.0f}%)"
+                else:
+                    css_class = "trade-loss"
+                    result = f"❌ LOST ${pnl:.2f}"
+            else:
+                css_class = "trade-open"
+                result = "⏳ Pending"
+            
+            st.markdown(f"""
+            <div class="trade-row {css_class}">
+                <span style="color:{color};font-weight:600;">{strategy_label(strat)}</span>
+                &nbsp;{emoji_dir} {direction} @ ${entry:.3f}
+                &nbsp;|&nbsp; Edge: {edge:.1f}%
+                &nbsp;|&nbsp; {result}
+                <span style="float:right;color:#a0a0c0;font-size:0.8rem;">{time_str}</span>
+            </div>
+            """, unsafe_allow_html=True)
+    
+    # Footer
+    st.markdown("---")
+    now_pst = datetime.now(timezone.utc).astimezone(PST).strftime("%b %d, %Y %I:%M %p PST")
+    st.markdown(
+        f'<div style="text-align:center;color:#606080;font-size:0.8rem;padding:10px 0;">'
+        f'🏞 The Outsiders v4 — Jakob & Austin | LIVE | {now_pst}'
+        f'</div>', unsafe_allow_html=True
+    )
+
+
+# ════════════════════════════════════════════
+# 📝 PAPER TAB
+# ════════════════════════════════════════════
+with tab_paper:
+    st.markdown(PAPER_CSS, unsafe_allow_html=True)
+    
+    col_h, col_s = st.columns([4, 1])
+    with col_h:
+        st.markdown("## 📝 Paper Trading")
+        st.markdown('<p style="color:#8892b0;font-style:italic;margin-top:-10px;">Strategy testing ground — no real money</p>', unsafe_allow_html=True)
+    with col_s:
+        is_paper = check_trader_running("paper_trader")
+        status_class = "color:#00d4aa;" if is_paper else "color:#ff6b6b;"
+        status_text = "● RUNNING" if is_paper else "● OFFLINE"
+        st.markdown(f'<div style="text-align:right;padding-top:10px;"><span style="{status_class}font-weight:600;">{status_text}</span></div>', unsafe_allow_html=True)
     
     st.markdown("---")
-
-# ─── PENDING RESOLUTION ───
-pending_trades = df[(df["status"] == "open")] if "status" in df.columns else pd.DataFrame()
-if not pending_trades.empty:
-    st.markdown("### ⏳ Pending Resolution")
-    st.markdown('<p style="color:#8892b0;font-size:0.85rem;margin-top:-10px;">'
-                'Trades waiting for Polymarket/Chainlink to confirm the outcome</p>',
-                unsafe_allow_html=True)
     
-    pending_display = pd.DataFrame()
-    if "timestamp" in pending_trades.columns:
-        pending_display["Time (PST)"] = pending_trades["timestamp"].apply(to_pst)
-    if "market_id" in pending_trades.columns:
-        pending_display["Market"] = pending_trades["market_id"]
-    if "direction" in pending_trades.columns:
-        pending_display["Direction"] = pending_trades["direction"].apply(
-            lambda x: f"🟢 {x.upper()}" if x == "up" else f"🔴 {x.upper()}"
-        )
-    if "entry_price" in pending_trades.columns:
-        pending_display["Entry"] = pending_trades["entry_price"].apply(lambda x: f"${x:.3f}" if pd.notna(x) else "")
-    if "edge_pct" in pending_trades.columns:
-        pending_display["Edge"] = pending_trades["edge_pct"].apply(lambda x: f"{x:.1f}%" if pd.notna(x) else "")
+    # Filters
+    f1, f2, f3 = st.columns([2, 2, 4])
+    with f1:
+        conn = get_connection()
+        strats = conn.execute("SELECT DISTINCT strategy FROM trades WHERE strategy NOT LIKE '%_LIVE' ORDER BY strategy").fetchall()
+        conn.close()
+        strat_options = ["All Strategies"] + [strategy_label(r["strategy"]) for r in strats]
+        selected_strat = st.selectbox("Strategy", strat_options, index=0, key="paper_strat")
+    with f2:
+        selected_res = st.selectbox("Resolution", ["All Trades", "Real Only", "Real Paper Only"], index=2, key="paper_res")
     
-    st.dataframe(pending_display, use_container_width=True, hide_index=True)
+    df_paper = load_trades_filtered(is_live=False)
+    
+    if df_paper.empty:
+        st.info("No paper trades yet. Run the paper trader to see results.")
+    else:
+        closed_paper = df_paper[df_paper["status"] == "closed"] if "status" in df_paper.columns else df_paper
+        open_paper = df_paper[df_paper["status"] == "open"] if "status" in df_paper.columns else pd.DataFrame()
+        
+        # Apply filters
+        if selected_strat != "All Strategies" and "strategy" in closed_paper.columns:
+            name_map = {v: k for k, v in STRATEGY_LABELS.items()}
+            sn = name_map.get(selected_strat, selected_strat)
+            closed_paper = closed_paper[closed_paper["strategy"] == sn]
+        if selected_res == "Real Only" and "exit_reason" in closed_paper.columns:
+            closed_paper = closed_paper[closed_paper["exit_reason"].str.contains("_real|backtest_", na=False)]
+        elif selected_res == "Real Paper Only" and "exit_reason" in closed_paper.columns:
+            closed_paper = closed_paper[closed_paper["exit_reason"].str.contains("_real", na=False)]
+        
+        total_t = len(closed_paper)
+        wins_p = len(closed_paper[closed_paper["pnl"] > 0]) if "pnl" in closed_paper.columns and total_t > 0 else 0
+        losses_p = total_t - wins_p
+        wr_p = (wins_p / total_t * 100) if total_t > 0 else 0
+        pnl_p = closed_paper["pnl"].sum() if "pnl" in closed_paper.columns and total_t > 0 else 0
+        bal_p = PAPER_STARTING_BALANCE + pnl_p
+        
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Balance", f"${bal_p:,.2f}", f"{((bal_p-PAPER_STARTING_BALANCE)/PAPER_STARTING_BALANCE*100):+.1f}%")
+        c2.metric("Total P&L", f"${pnl_p:+,.2f}")
+        c3.metric("Trades", f"{total_t}", f"{wins_p}W / {losses_p}L")
+        c4.metric("Win Rate", f"{wr_p:.1f}%")
+        c5.metric("Open", f"{len(open_paper)}")
+        
+        st.markdown("---")
+        
+        # Strategy comparison
+        if total_t > 0 and selected_strat == "All Strategies":
+            st.markdown("### 🏆 Strategy Comparison")
+            comp_cols = st.columns(min(len(closed_paper["strategy"].unique()), 5))
+            
+            for i, sname in enumerate(closed_paper["strategy"].unique()):
+                s = closed_paper[closed_paper["strategy"] == sname]
+                st_ = len(s)
+                sw = len(s[s["pnl"] > 0])
+                sl = st_ - sw
+                swr = (sw / st_ * 100) if st_ > 0 else 0
+                sp = s["pnl"].sum()
+                color = strategy_color(sname)
+                
+                with comp_cols[i % len(comp_cols)]:
+                    st.markdown(f"""
+                    <div style="background:linear-gradient(135deg,#1a1a2e,#16213e);border:1px solid rgba(255,255,255,0.08);
+                        border-top:3px solid {color};border-radius:12px;padding:16px;margin-bottom:10px;">
+                        <b style="color:#ccd6f6;">{strategy_label(sname)}</b><br>
+                        <span style="color:#8892b0;font-size:0.85rem;line-height:1.8;">
+                        Record: <b style="color:#ccd6f6">{sw}W/{sl}L</b><br>
+                        WR: <b style="color:{'#00d4aa' if swr>=50 else '#ff6b6b'}">{swr:.0f}%</b><br>
+                        P&L: <b style="color:{'#00d4aa' if sp>=0 else '#ff6b6b'}">${sp:+.2f}</b>
+                        </span>
+                    </div>
+                    """, unsafe_allow_html=True)
+        
+        # Equity curve
+        equity_p = load_equity(is_live=False, starting_balance=PAPER_STARTING_BALANCE)
+        if not equity_p.empty:
+            fig_p = go.Figure()
+            fig_p.add_trace(go.Scatter(
+                x=equity_p["time_pst"], y=equity_p["balance"],
+                mode="lines", name="Balance",
+                line=dict(color="#00d4aa", width=2.5),
+                fill="tozeroy", fillcolor="rgba(0,212,170,0.08)",
+            ))
+            fig_p.add_hline(y=PAPER_STARTING_BALANCE, line_dash="dot", line_color="rgba(255,255,255,0.15)")
+            fig_p.update_layout(
+                title=dict(text="Paper Equity Curve", font=dict(size=18, color="#ccd6f6")),
+                xaxis=dict(title="", gridcolor="rgba(255,255,255,0.03)", tickfont=dict(color="#8892b0")),
+                yaxis=dict(title="Balance ($)", tickprefix="$", gridcolor="rgba(255,255,255,0.03)",
+                          tickfont=dict(color="#8892b0"), title_font=dict(color="#8892b0")),
+                template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(10,10,26,0.5)", height=380,
+                margin=dict(l=60, r=20, t=50, b=40), showlegend=False,
+            )
+            st.plotly_chart(fig_p, use_container_width=True)
+        
+        # Recent trades table
+        st.markdown("### 📋 Recent Paper Trades")
+        if not closed_paper.empty:
+            display = closed_paper.head(30).copy()
+            td = pd.DataFrame()
+            if "time_display" in display.columns:
+                td["Time (PST)"] = display["time_display"]
+            if "strategy" in display.columns:
+                td["Strategy"] = display["strategy"].apply(strategy_label)
+            if "direction" in display.columns:
+                td["Direction"] = display["direction"].apply(lambda x: f"🟢 {x.upper()}" if x == "up" else f"🔴 {x.upper()}")
+            if "entry_price" in display.columns:
+                td["Entry"] = display["entry_price"].apply(lambda x: f"${x:.3f}" if pd.notna(x) else "")
+            if "pnl" in display.columns:
+                td["P&L"] = display["pnl"].apply(lambda x: f"${x:+.2f}" if pd.notna(x) else "")
+            if "exit_reason" in display.columns:
+                td["Result"] = display["exit_reason"].apply(
+                    lambda x: "✅ Win" if "win" in str(x) else "❌ Loss" if "loss" in str(x) else str(x) if pd.notna(x) else "")
+            st.dataframe(td, use_container_width=True, hide_index=True, height=400)
+    
     st.markdown("---")
-
-# ─── STRATEGY PARAMS ───
-with st.expander("⚙️ Strategy Configuration"):
-    params_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "best_params.json")
-    if os.path.exists(params_path):
-        with open(params_path) as f:
-            config = json.load(f)
-        params = config.get("params", {})
-        
-        p1, p2, p3, p4 = st.columns(4)
-        p1.metric("Take Profit", f"{params.get('take_profit_pct', 0)}%")
-        p2.metric("Stop Loss", f"{params.get('stop_loss_pct', 0)}%")
-        p3.metric("Min Edge", f"{params.get('min_edge_pct', 0)}%")
-        p4.metric("Risk/Trade", f"{params.get('risk_per_trade_pct', 0)}%")
-        
-        st.markdown("**Signal Weights:**")
-        w1, w2, w3, w4, w5 = st.columns(5)
-        w1.markdown(f"Momentum: **{params.get('w_momentum', 0):.2f}**")
-        w2.markdown(f"Trend: **{params.get('w_trend', 0):.2f}**")
-        w3.markdown(f"Last Candle: **{params.get('w_last_candle', 0):.2f}**")
-        w4.markdown(f"Orderbook: **{params.get('w_orderbook', 0):.2f}**")
-        w5.markdown(f"Volatility: **{params.get('w_volatility', 0):.2f}**")
-
-# ─── FOOTER ───
-st.markdown("---")
-now_pst = datetime.now(timezone.utc).astimezone(PST).strftime("%b %d, %Y %I:%M %p PST")
-st.markdown(
-    f'<div style="text-align:center;color:#495670;font-size:0.8rem;padding:10px 0;">'
-    f'🏞 The Outsiders v2 — Jakob & Austin | Last refresh: {now_pst}'
-    f'</div>',
-    unsafe_allow_html=True
-)
+    now_pst = datetime.now(timezone.utc).astimezone(PST).strftime("%b %d, %Y %I:%M %p PST")
+    st.markdown(
+        f'<div style="text-align:center;color:#495670;font-size:0.8rem;padding:10px 0;">'
+        f'🏞 The Outsiders v4 — Paper Trading | {now_pst}'
+        f'</div>', unsafe_allow_html=True
+    )
