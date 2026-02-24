@@ -66,7 +66,7 @@ CTF_ABI = json.loads("""[
 
 # Rate limiting
 MIN_REDEEM_INTERVAL_S = 30  # Min seconds between redemption txs
-MAX_REDEEMS_PER_HOUR = 5
+MAX_REDEEMS_PER_HOUR = 15
 
 # Minimal ABI for Polymarket ProxyWallet
 # Uses proxy(ProxyCall[]) where ProxyCall = (address to, uint256 value, bytes data)
