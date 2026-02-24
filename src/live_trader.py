@@ -108,6 +108,8 @@ class StrategyState:
         self.losses = 0
         self.trade_count = 0
         self.total_pnl = 0.0
+        self.consecutive_losses = 0
+        self.cooldown_skips = 0  # Trades to skip after loss streak
 
 
 class LiveTrader:
@@ -383,8 +385,14 @@ class LiveTrader:
             self.trade_size = self._calc_trade_size(balance)
             has_funds = balance is not None and balance >= self.trade_size
             
-            if sig.should_trade and can_trade and strategy_cap and has_funds:
+            # Loss streak cooldown check (Smart Money)
+            in_cooldown = state.cooldown_skips > 0
+
+            if sig.should_trade and can_trade and strategy_cap and has_funds and not in_cooldown:
                 self._execute_live_trade(state, sig, snapshot)
+            elif sig.should_trade and in_cooldown:
+                state.cooldown_skips -= 1
+                self.log(f"   🛑 {state.display}: Skipping (cooldown, {state.cooldown_skips} skips left)")
                 total_open += 1
             elif sig.should_trade and not has_funds:
                 self.log(f"   ⚠️ {state.display}: Signal but insufficient funds (${balance:.2f})")
@@ -512,11 +520,17 @@ class LiveTrader:
                 pnl_pct = ((1.0 / trade["entry_price"]) - 1.0) * 100
                 exit_reason = "win_live"
                 state.wins += 1
+                state.consecutive_losses = 0
             else:
                 pnl = -trade["cost"]
                 pnl_pct = -100.0
                 exit_reason = "loss_live"
                 state.losses += 1
+                state.consecutive_losses += 1
+                # Smart Money: after 2+ consecutive losses, skip next 2 signals
+                if state.key == "smart_money" and state.consecutive_losses >= 2:
+                    state.cooldown_skips = 2
+                    self.log(f"   🛑 {state.display}: {state.consecutive_losses} losses in a row → cooling down (skip 2)")
             
             state.total_pnl += pnl
             state.trade_count += 1
