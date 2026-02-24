@@ -206,13 +206,19 @@ class Redeemer:
 
             # Route through Factory.proxy() — Factory forwards to our proxy wallet
             # Factory uses _msgSender() to derive our proxy wallet address
-            # Must use raw encoding because Solidity 0.5 ABIEncoderV2 selector differs from web3.py
+            # Solidity 0.5 ABIEncoderV2 encodes tuple[] with an extra length prefix
+            # that eth_abi doesn't produce, so we patch the encoding manually.
             proxy_call_data = bytes.fromhex(redeem_data[2:])
             encoded_args = abi_encode(
                 ['(address,uint256,bytes)[]'],
                 [[(Web3.to_checksum_address(CTF_ADDRESS), 0, proxy_call_data)]]
             )
-            calldata = FACTORY_PROXY_SELECTOR + encoded_args
+            # Patch: insert 32-byte word (value=1) at byte 96 and fix bytes offset 0x60→0x80
+            # This matches the on-chain encoding used by Polymarket's frontend
+            patched = bytearray(encoded_args[:96]) + bytearray((1).to_bytes(32, 'big')) + bytearray(encoded_args[96:])
+            # Fix the tuple's bytes-offset field (now at word[6], byte 192)
+            patched[192:224] = (0x80).to_bytes(32, 'big')
+            calldata = FACTORY_PROXY_SELECTOR + bytes(patched)
 
             tx = {
                 "from": self.eoa_address,
