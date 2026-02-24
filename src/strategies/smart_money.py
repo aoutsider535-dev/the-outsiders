@@ -283,8 +283,20 @@ def generate_signal(candles, orderbook_data=None, market_up_price=0.5,
         signal.edge_pct = (prob - market_down_price) * 100
     
     min_edge = params["min_edge_pct"]
+    max_edge = params.get("max_edge_pct", 12.0)
     min_confidence = params.get("min_confidence", 0.59)
-    if signal.edge_pct >= min_edge and signal.confidence >= min_confidence:
+    min_btc_change = params.get("min_btc_change_pct", 0.05)
+    
+    # Combo C filters — validated: 62.9% WR on 35 trades (+$42.28)
+    abs_btc_change = abs(signal.btc_change_pct)
+    
+    if signal.edge_pct > max_edge:
+        signal.reason = (f"⚠️ SmartMoney: Edge {signal.edge_pct:.1f}% > {max_edge}% cap | "
+                        f"Score: {raw_score:+.3f} | Value: {signal.cheap_side} | Trend: {signal.btc_trend_dir}")
+    elif abs_btc_change < min_btc_change:
+        signal.reason = (f"⚠️ SmartMoney: |BTC Δ|={abs_btc_change:.3f}% < {min_btc_change}% (too flat) | "
+                        f"Score: {raw_score:+.3f} | Value: {signal.cheap_side} | Trend: {signal.btc_trend_dir}")
+    elif signal.edge_pct >= min_edge and signal.confidence >= min_confidence:
         signal.should_trade = True
         signal.reason = (f"Smart Money: Edge {signal.edge_pct:.1f}% >= {min_edge}% | "
                         f"Score: {raw_score:+.3f} | "
