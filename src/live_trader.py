@@ -111,8 +111,12 @@ class StrategyState:
 
 
 class LiveTrader:
-    def __init__(self, trade_size=5.0, max_per_strategy=5, max_total=15):
-        self.trade_size = trade_size  # USD per trade
+    def __init__(self, trade_size=5.0, max_per_strategy=5, max_total=15,
+                 trade_size_pct=4.0, trade_size_min=5.0, trade_size_max=50.0):
+        self.trade_size = trade_size  # USD per trade (fallback)
+        self.trade_size_pct = trade_size_pct  # % of balance per trade
+        self.trade_size_min = trade_size_min
+        self.trade_size_max = trade_size_max
         self.max_per_strategy = max_per_strategy
         self.max_total = max_total
         self.running = True
@@ -189,6 +193,15 @@ class LiveTrader:
             self.log(f"⚠️ Balance check error: {e}")
             return None
     
+    def _calc_trade_size(self, balance=None):
+        """Calculate dynamic trade size: trade_size_pct% of balance, clamped to [min, max]."""
+        if balance is None:
+            balance = self._get_balance()
+        if balance is None or balance <= 0:
+            return self.trade_size_min
+        size = balance * (self.trade_size_pct / 100)
+        return max(self.trade_size_min, min(self.trade_size_max, round(size, 2)))
+    
     def _total_open(self):
         return sum(len(s.open_trades) for s in self.strategies.values())
     
@@ -260,13 +273,14 @@ class LiveTrader:
         
         # Check balance
         balance = self._get_balance()
-        if balance is None or balance < self.trade_size:
-            print(f"❌ Insufficient balance: ${balance}. Need at least ${self.trade_size}")
+        if balance is None or balance < self.trade_size_min:
+            print(f"❌ Insufficient balance: ${balance}. Need at least ${self.trade_size_min}")
             return
         
         self.initial_balance = balance
         self.log(f"💰 Balance: ${balance:,.2f}")
-        self.log(f"📊 Trade size: ${self.trade_size:.2f} per trade")
+        current_size = self._calc_trade_size(balance)
+        self.log(f"📊 Trade size: {self.trade_size_pct}% of balance = ${current_size:.2f} (min ${self.trade_size_min}, max ${self.trade_size_max})")
         self.log(f"📡 Strategies:")
         for s in self.strategies.values():
             p = s.params
@@ -364,8 +378,9 @@ class LiveTrader:
             can_trade = total_open < self.max_total
             strategy_cap = len(state.open_trades) < self.max_per_strategy
             
-            # Check balance before trading
+            # Check balance and calculate dynamic trade size
             balance = self._get_balance()
+            self.trade_size = self._calc_trade_size(balance)
             has_funds = balance is not None and balance >= self.trade_size
             
             if sig.should_trade and can_trade and strategy_cap and has_funds:
