@@ -64,8 +64,23 @@ CTF_ABI = json.loads("""[
 MIN_REDEEM_INTERVAL_S = 30  # Min seconds between redemption txs
 MAX_REDEEMS_PER_HOUR = 5
 
+# Minimal ABI for Polymarket proxy wallet
+PROXY_ABI = json.loads("""[
+    {
+        "inputs": [
+            {"name": "to", "type": "address"},
+            {"name": "value", "type": "uint256"},
+            {"name": "data", "type": "bytes"}
+        ],
+        "name": "exec",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    }
+]""")
+
 # Default Polygon RPC (free, generous limits)
-DEFAULT_RPC = "https://polygon-rpc.com"
+DEFAULT_RPC = "https://1rpc.io/matic"
 
 PST = timezone(timedelta(hours=-8))
 
@@ -75,12 +90,18 @@ class Redeemer:
 
     def __init__(self, private_key: str, wallet_address: str, rpc_url: str = None):
         self.rpc_url = rpc_url or os.environ.get("POLYGON_RPC_URL", DEFAULT_RPC)
-        self.w3 = Web3(Web3.HTTPProvider(self.rpc_url))
+        self.w3 = Web3(Web3.HTTPProvider(self.rpc_url, request_kwargs={"timeout": 10}))
         self.account = Account.from_key(private_key)
-        self.wallet_address = Web3.to_checksum_address(wallet_address)
+        self.eoa_address = self.account.address  # EOA signs txs and pays gas
+        self.proxy_address = Web3.to_checksum_address(wallet_address)  # Proxy holds tokens
+        self.wallet_address = self.proxy_address  # Backward compat for balance checks
         self.ctf = self.w3.eth.contract(
             address=Web3.to_checksum_address(CTF_ADDRESS),
             abi=CTF_ABI,
+        )
+        self.proxy = self.w3.eth.contract(
+            address=self.proxy_address,
+            abi=PROXY_ABI,
         )
 
         # Rate limiting state
@@ -164,16 +185,23 @@ class Redeemer:
             # parentCollectionId = bytes32(0) for standard markets
             parent = b'\x00' * 32
 
-            # Build transaction
-            tx = self.ctf.functions.redeemPositions(
+            # Encode the CTF redeemPositions call
+            redeem_data = self.ctf.functions.redeemPositions(
                 Web3.to_checksum_address(USDC_ADDRESS),
                 parent,
                 cid_bytes,
                 index_sets,
+            )._encode_transaction_data()
+
+            # Route through proxy.exec() — EOA calls proxy, proxy calls CTF
+            tx = self.proxy.functions.exec(
+                Web3.to_checksum_address(CTF_ADDRESS),
+                0,  # no value (no POL sent with call)
+                redeem_data,
             ).build_transaction({
-                "from": self.wallet_address,
-                "nonce": self.w3.eth.get_transaction_count(self.wallet_address),
-                "gas": 200_000,
+                "from": self.eoa_address,  # EOA signs and pays gas
+                "nonce": self.w3.eth.get_transaction_count(self.eoa_address),
+                "gas": 300_000,
                 "gasPrice": self.w3.eth.gas_price,
                 "chainId": 137,
             })
