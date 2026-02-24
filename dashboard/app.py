@@ -19,6 +19,8 @@ PAPER_STARTING_BALANCE = 1000.0
 
 # v1→v2 cutoff: Feb 23 2026 6:00 AM PST (when thresholds were updated)
 V2_CUTOFF_TS = 1771905600
+# v2→v3 cutoff: Feb 24 2026 7:45 AM PST (Mean Reversion Combo C filters)
+V3_CUTOFF_TS = 1771955100
 
 STRATEGY_COLORS = {
     "btc_5min_momentum_LIVE": "#00ff88",
@@ -83,7 +85,12 @@ def to_pst(ts):
 def get_version(ts):
     """Return strategy version based on timestamp."""
     try:
-        return "v2" if int(ts) >= V2_CUTOFF_TS else "v1"
+        ts = int(ts)
+        if ts >= V3_CUTOFF_TS:
+            return "v3"
+        elif ts >= V2_CUTOFF_TS:
+            return "v2"
+        return "v1"
     except:
         return "v1"
 
@@ -253,6 +260,7 @@ st.markdown("""
     }
     .version-v1 { background: rgba(255,255,255,0.1); color: #888; }
     .version-v2 { background: rgba(0,255,136,0.15); color: #00ff88; }
+    .version-v3 { background: rgba(0,136,255,0.15); color: #0088ff; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -391,6 +399,7 @@ def render_strategy_cards(df):
         # Version breakdown
         v1 = len(s_df[s_df["version"] == "v1"]) if "version" in s_df.columns else 0
         v2 = len(s_df[s_df["version"] == "v2"]) if "version" in s_df.columns else 0
+        v3 = len(s_df[s_df["version"] == "v3"]) if "version" in s_df.columns else 0
 
         with cols[i % len(cols)]:
             st.markdown(f"""
@@ -399,6 +408,7 @@ def render_strategy_cards(df):
                     {strategy_label(sname)}
                     <span class="version-badge version-v1">v1: {v1}</span>
                     <span class="version-badge version-v2">v2: {v2}</span>
+                    <span class="version-badge version-v3">v3: {v3}</span>
                 </div>
                 <div style="color:#b0b0d0;font-size:0.82rem;line-height:2;">
                     Record: <b style="color:#fff">{s['wins']}W / {s['losses']}L</b><br>
@@ -496,7 +506,7 @@ with tab_live:
                 "📊 Strategy", options=all_strats, default=all_strats,
                 format_func=lambda x: strategy_label(x), key="live_strat")
         with fc2:
-            version_filter = st.selectbox("🏷️ Version", ["All", "v1 (old thresholds)", "v2 (optimized)"], key="live_ver")
+            version_filter = st.selectbox("🏷️ Version", ["All", "v1 (old thresholds)", "v2 (optimized)", "v3 (Combo C)"], key="live_ver")
         with fc3:
             min_edge = st.slider("Min Edge %", 0.0, 20.0, 0.0, 0.5, key="live_edge")
         with fc4:
@@ -510,6 +520,8 @@ with tab_live:
             filtered = filtered[filtered["version"] == "v1"]
         elif version_filter.startswith("v2"):
             filtered = filtered[filtered["version"] == "v2"]
+        elif version_filter.startswith("v3"):
+            filtered = filtered[filtered["version"] == "v3"]
         if min_edge > 0 and "edge_pct" in filtered.columns:
             filtered = filtered[filtered["edge_pct"] >= min_edge]
         if min_conf > 0.5 and "confidence" in filtered.columns:
@@ -574,6 +586,8 @@ with tab_live:
             display_df = display_df[display_df["version"] == "v1"]
         elif version_filter.startswith("v2"):
             display_df = display_df[display_df["version"] == "v2"]
+        elif version_filter.startswith("v3"):
+            display_df = display_df[display_df["version"] == "v3"]
         render_trade_history(display_df)
 
 

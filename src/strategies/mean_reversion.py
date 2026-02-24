@@ -280,10 +280,28 @@ def generate_signal(candles, orderbook_data=None, market_up_price=0.5,
     
     # Should we trade?
     min_edge = params["min_edge_pct"]
-    min_confidence = params.get("min_confidence", 0.55)
+    min_confidence = params.get("min_confidence", 0.57)
     # Mean reversion: data shows higher edge = LOWER win rate, so cap max edge too
     max_edge = params.get("max_edge_pct", 12.0)
-    if signal.edge_pct >= min_edge and signal.confidence >= min_confidence and signal.edge_pct <= max_edge:
+    # Combo C filters — validated on paper OOS (73.3% WR) and live (67.6% WR)
+    max_dev_score = params.get("max_deviation_score", 0.80)
+    max_vol_climax = params.get("max_volume_climax", 0.50)
+    min_rsi_extremity = params.get("min_rsi_extremity", 8.0)
+    
+    # Check Combo C quality filters first
+    abs_dev = abs(signal.deviation_score)
+    rsi_extremity = abs(signal.rsi_value - 50)
+    
+    if abs_dev > max_dev_score:
+        signal.reason = (f"⚠️ MeanRev: |dev|={abs_dev:.2f} > {max_dev_score} (trending too hard) | "
+                        f"Score: {raw_score:+.3f} | RSI: {rsi:.0f}")
+    elif signal.volume_climax_score > max_vol_climax:
+        signal.reason = (f"⚠️ MeanRev: VolClimax={signal.volume_climax_score:.2f} > {max_vol_climax} (momentum) | "
+                        f"Score: {raw_score:+.3f} | RSI: {rsi:.0f}")
+    elif rsi_extremity < min_rsi_extremity:
+        signal.reason = (f"⚠️ MeanRev: |RSI-50|={rsi_extremity:.1f} < {min_rsi_extremity} (not overextended) | "
+                        f"Score: {raw_score:+.3f} | RSI: {rsi:.0f}")
+    elif signal.edge_pct >= min_edge and signal.confidence >= min_confidence and signal.edge_pct <= max_edge:
         signal.should_trade = True
         signal.reason = (f"Mean reversion: Edge {signal.edge_pct:.1f}% >= {min_edge}% | "
                         f"Score: {raw_score:+.3f} | RSI: {rsi:.0f} | "
