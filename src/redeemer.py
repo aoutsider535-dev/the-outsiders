@@ -64,17 +64,24 @@ CTF_ABI = json.loads("""[
 MIN_REDEEM_INTERVAL_S = 30  # Min seconds between redemption txs
 MAX_REDEEMS_PER_HOUR = 5
 
-# Minimal ABI for Polymarket proxy wallet
+# Minimal ABI for Polymarket ProxyWallet
+# Uses proxy(ProxyCall[]) where ProxyCall = (address to, uint256 value, bytes data)
 PROXY_ABI = json.loads("""[
     {
         "inputs": [
-            {"name": "to", "type": "address"},
-            {"name": "value", "type": "uint256"},
-            {"name": "data", "type": "bytes"}
+            {
+                "components": [
+                    {"name": "to", "type": "address"},
+                    {"name": "value", "type": "uint256"},
+                    {"name": "data", "type": "bytes"}
+                ],
+                "name": "calls",
+                "type": "tuple[]"
+            }
         ],
-        "name": "exec",
-        "outputs": [],
-        "stateMutability": "nonpayable",
+        "name": "proxy",
+        "outputs": [{"name": "returnValues", "type": "bytes[]"}],
+        "stateMutability": "payable",
         "type": "function"
     }
 ]""")
@@ -193,11 +200,11 @@ class Redeemer:
                 index_sets,
             )._encode_transaction_data()
 
-            # Route through proxy.exec() — EOA calls proxy, proxy calls CTF
-            tx = self.proxy.functions.exec(
-                Web3.to_checksum_address(CTF_ADDRESS),
-                0,  # no value (no POL sent with call)
-                redeem_data,
+            # Route through proxy.proxy() — EOA calls proxy, proxy calls CTF
+            # ProxyCall struct: (address to, uint256 value, bytes data)
+            proxy_call = (Web3.to_checksum_address(CTF_ADDRESS), 0, bytes.fromhex(redeem_data[2:]))
+            tx = self.proxy.functions.proxy(
+                [proxy_call],
             ).build_transaction({
                 "from": self.eoa_address,  # EOA signs and pays gas
                 "nonce": self.w3.eth.get_transaction_count(self.eoa_address),
