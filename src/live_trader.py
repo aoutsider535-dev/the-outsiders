@@ -460,7 +460,7 @@ class LiveTrader:
             "quantity": order["size"],
             "edge_pct": sig.edge_pct,
             "confidence": sig.confidence,
-            "signal_data": sig.to_dict() if hasattr(sig, 'to_dict') else {},
+            "signal_data": {**(sig.to_dict() if hasattr(sig, 'to_dict') else {}), "condition_id": snapshot["condition_id"]},
             "is_simulated": 0,  # REAL TRADE!
         }
         
