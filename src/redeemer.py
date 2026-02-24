@@ -17,12 +17,16 @@ import logging
 from datetime import datetime, timezone, timedelta
 from web3 import Web3
 from eth_account import Account
+from eth_abi import encode as abi_encode
 
 logger = logging.getLogger(__name__)
 
 # Contract addresses (Polygon mainnet)
 CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
 NEG_RISK_ADAPTER = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"
+FACTORY_ADDRESS = "0xaB45c5A4B0c941a2F231C04C3f49182e1A254052"
+# Hardcoded selector for Factory.proxy((address,uint256,bytes)[]) — Solidity 0.5 ABIEncoderV2
+FACTORY_PROXY_SELECTOR = bytes.fromhex("34ee9791")
 USDC_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
 
 # Minimal ABI for CTF redeemPositions
@@ -200,18 +204,26 @@ class Redeemer:
                 index_sets,
             )._encode_transaction_data()
 
-            # Route through proxy.proxy() — EOA calls proxy, proxy calls CTF
-            # ProxyCall struct: (address to, uint256 value, bytes data)
-            proxy_call = (Web3.to_checksum_address(CTF_ADDRESS), 0, bytes.fromhex(redeem_data[2:]))
-            tx = self.proxy.functions.proxy(
-                [proxy_call],
-            ).build_transaction({
-                "from": self.eoa_address,  # EOA signs and pays gas
+            # Route through Factory.proxy() — Factory forwards to our proxy wallet
+            # Factory uses _msgSender() to derive our proxy wallet address
+            # Must use raw encoding because Solidity 0.5 ABIEncoderV2 selector differs from web3.py
+            proxy_call_data = bytes.fromhex(redeem_data[2:])
+            encoded_args = abi_encode(
+                ['(address,uint256,bytes)[]'],
+                [[(Web3.to_checksum_address(CTF_ADDRESS), 0, proxy_call_data)]]
+            )
+            calldata = FACTORY_PROXY_SELECTOR + encoded_args
+
+            tx = {
+                "from": self.eoa_address,
+                "to": Web3.to_checksum_address(FACTORY_ADDRESS),
+                "data": calldata,
                 "nonce": self.w3.eth.get_transaction_count(self.eoa_address),
                 "gas": 300_000,
                 "gasPrice": self.w3.eth.gas_price,
                 "chainId": 137,
-            })
+                "value": 0,
+            }
 
             # Sign and send
             signed = self.account.sign_transaction(tx)
