@@ -226,7 +226,7 @@ class Redeemer:
                 "data": calldata,
                 "nonce": self.w3.eth.get_transaction_count(self.eoa_address),
                 "gas": 300_000,
-                "gasPrice": self.w3.eth.gas_price,
+                "gasPrice": max(self.w3.eth.gas_price, 30_000_000_000),  # min 30 Gwei
                 "chainId": 137,
                 "value": 0,
             }
