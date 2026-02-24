@@ -294,7 +294,7 @@ def render_kpi_row(balance, total_pnl, roi, stats, open_count, active_strats):
         """, unsafe_allow_html=True)
 
 
-def render_equity_chart(df, starting_balance, time_range="All", selected_strategies=None):
+def render_equity_chart(df, starting_balance, time_range="All", selected_strategies=None, real_balance=None):
     """Render P&L equity curve with time range and strategy filters."""
     closed = df[df["status"] == "closed"].copy() if "status" in df.columns else df.copy()
     if closed.empty:
@@ -319,9 +319,16 @@ def render_equity_chart(df, starting_balance, time_range="All", selected_strateg
         st.info("No trades in selected time range.")
         return
 
-    # Build equity curve
+    # Build equity curve — adjust for untracked P&L if real balance known
     closed["cumulative_pnl"] = closed["pnl"].cumsum()
-    closed["balance"] = starting_balance + closed["cumulative_pnl"]
+    db_final = starting_balance + closed["cumulative_pnl"].iloc[-1] if len(closed) else starting_balance
+    if real_balance is not None and real_balance > 0 and abs(db_final - real_balance) > 1.0:
+        # DB is missing some losses/gains — adjust starting balance so chart endpoint = real balance
+        adjustment = real_balance - db_final
+        effective_start = starting_balance + adjustment
+    else:
+        effective_start = starting_balance
+    closed["balance"] = effective_start + closed["cumulative_pnl"]
 
     fig = go.Figure()
 
@@ -339,7 +346,7 @@ def render_equity_chart(df, starting_balance, time_range="All", selected_strateg
     for strat in strats:
         s_df = closed[closed["strategy"] == strat]
         fig.add_trace(go.Scatter(
-            x=s_df["time_pst"], y=starting_balance + s_df["pnl"].cumsum(),
+            x=s_df["time_pst"], y=effective_start + s_df["pnl"].cumsum(),
             mode="markers+lines", name=strategy_label(strat),
             line=dict(color=strategy_color(strat), width=1.5),
             marker=dict(size=4, color=strategy_color(strat)),
@@ -550,7 +557,7 @@ with tab_live:
             if st.session_state.get(f"tr_{label}_clicked"):
                 st.session_state.live_time_range = label
 
-        render_equity_chart(filtered, LIVE_STARTING_BALANCE, time_range, selected_strategies)
+        render_equity_chart(filtered, LIVE_STARTING_BALANCE, time_range, selected_strategies, real_balance=balance)
 
         # ─── STRATEGY CARDS ───
         st.markdown("### 🏆 Strategy Performance")
