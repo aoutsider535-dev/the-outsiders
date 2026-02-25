@@ -367,7 +367,7 @@ def render_kpi_row(balance, total_pnl, roi, stats, open_count, active_strats):
         """, unsafe_allow_html=True)
 
 
-def render_equity_chart(df, starting_balance, time_range_hours=None, selected_strategies=None, real_balance=None):
+def render_equity_chart(df, starting_balance, selected_strategies=None, real_balance=None):
     """Render P&L equity curve with strategy filters."""
     closed = df[df["status"] == "closed"].copy() if "status" in df.columns else df.copy()
     if closed.empty:
@@ -381,15 +381,6 @@ def render_equity_chart(df, starting_balance, time_range_hours=None, selected_st
         return
 
     closed = closed.sort_values("timestamp")
-
-    # Time range filter from slider (in hours)
-    if time_range_hours is not None:
-        now_ts = datetime.now(timezone.utc).timestamp()
-        cutoff = now_ts - (time_range_hours * 3600)
-        closed = closed[closed["timestamp"] >= cutoff]
-    if closed.empty:
-        st.info("No trades in selected time range.")
-        return
 
     # Build equity curve
     closed["cumulative_pnl"] = closed["pnl"].cumsum()
@@ -579,22 +570,23 @@ with tab_live:
                 "Strategies", options=all_strats, default=all_strats,
                 format_func=lambda x: strategy_label(x), key="live_strat")
         with fc2:
-            # Draggable time range slider (in hours)
-            time_range_hours = st.slider(
+            # Dual-point datetime range picker
+            if not closed.empty:
+                earliest = closed["time_pst"].min().to_pydatetime()
+                latest = closed["time_pst"].max().to_pydatetime()
+            else:
+                earliest = datetime.now(PST) - timedelta(days=7)
+                latest = datetime.now(PST)
+            
+            time_range = st.slider(
                 "⏱️ Time Range",
-                min_value=1, max_value=168, value=168,
-                format="%dh",
-                help="Drag to adjust time window. 1h to 168h (7 days).",
+                min_value=earliest,
+                max_value=latest,
+                value=(earliest, latest),
+                format="MM/DD HH:mm",
                 key="live_time_slider"
             )
-            # Show human-readable label
-            if time_range_hours <= 6:
-                range_label = f"{time_range_hours}h"
-            elif time_range_hours <= 48:
-                range_label = f"{time_range_hours/24:.1f}d"
-            else:
-                range_label = f"{time_range_hours/24:.0f}d"
-            st.caption(f"Showing last **{range_label}**")
+            time_start, time_end = time_range
 
         # Row 2: Per-strategy version filters
         fc3, fc4, fc5, fc6 = st.columns(4)
@@ -634,10 +626,8 @@ with tab_live:
         filtered = filtered[mask]
         
         # Time range filter
-        if time_range_hours < 168:
-            now_ts = datetime.now(timezone.utc).timestamp()
-            cutoff = now_ts - (time_range_hours * 3600)
-            filtered = filtered[filtered["timestamp"] >= cutoff]
+        if "time_pst" in filtered.columns:
+            filtered = filtered[(filtered["time_pst"] >= time_start) & (filtered["time_pst"] <= time_end)]
         
         # Edge & confidence filters
         if min_edge > 0 and "edge_pct" in filtered.columns:
@@ -675,7 +665,6 @@ with tab_live:
         st.markdown('<div class="section-header">📈 Equity Curve</div>', unsafe_allow_html=True)
         render_equity_chart(
             filtered, LIVE_STARTING_BALANCE,
-            time_range_hours=time_range_hours if time_range_hours < 168 else None,
             selected_strategies=selected_strategies,
             real_balance=balance
         )
