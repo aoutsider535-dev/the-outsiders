@@ -24,6 +24,7 @@ STRATEGY_VERSIONS = {
         {"version": "v1", "start": 0, "label": "Original"},
         {"version": "v2", "start": 1771905600, "label": "Min edge 7%, conf 57%"},
         {"version": "v3", "start": 1771977600, "label": "Edge 8-12% sweet spot"},
+        {"version": "v4", "start": 1772035700, "label": "Conf 58%, streak breaker, overnight gate"},
     ],
     "btc_5min_meanrev_LIVE": [
         {"version": "v1", "start": 0, "label": "Original"},
@@ -33,11 +34,13 @@ STRATEGY_VERSIONS = {
     "btc_5min_ob_imbalance_LIVE": [
         {"version": "v1", "start": 0, "label": "Original (4% edge)"},
         {"version": "v2", "start": 1771964100, "label": "Min edge 3%"},
+        {"version": "v3", "start": 1772035700, "label": "Min edge 3.5%"},
     ],
     "btc_5min_smart_money_LIVE": [
         {"version": "v1", "start": 0, "label": "Original"},
         {"version": "v2", "start": 1771905600, "label": "Edge 10%, conf 59%, streak breaker"},
         {"version": "v3", "start": 1771955100, "label": "Combo C + edge cap 20%"},
+        {"version": "v4", "start": 1772035700, "label": "Min edge 11%, overnight gate, streak breaker"},
     ],
 }
 

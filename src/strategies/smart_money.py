@@ -25,7 +25,7 @@ from typing import Optional
 
 DEFAULT_PARAMS = {
     "lookback_minutes": 15,
-    "min_edge_pct": 10.0,
+    "min_edge_pct": 11.0,
     "take_profit_pct": 65.0,
     "stop_loss_pct": 22.0,
     "risk_per_trade_pct": 5.0,

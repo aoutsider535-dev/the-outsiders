@@ -273,7 +273,7 @@ def generate_signal(candles, orderbook_data=None, market_up_price=0.5,
 
     # Should we trade?
     min_edge = params["min_edge_pct"]
-    min_confidence = params.get("min_confidence", 0.57)
+    min_confidence = params.get("min_confidence", 0.58)
     max_edge = params.get("max_edge_pct", 12.0)
     
     if signal.edge_pct > max_edge:

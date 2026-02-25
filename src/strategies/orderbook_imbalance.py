@@ -20,7 +20,7 @@ from dataclasses import dataclass, asdict
 
 DEFAULT_PARAMS = {
     "lookback_minutes": 10,
-    "min_edge_pct": 3.0,
+    "min_edge_pct": 3.5,
     "take_profit_pct": 55.0,
     "stop_loss_pct": 25.0,
     "risk_per_trade_pct": 5.0,

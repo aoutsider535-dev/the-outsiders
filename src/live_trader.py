@@ -467,7 +467,12 @@ class LiveTrader:
             self.trade_size = self._calc_trade_size(balance, strategy_key=key)
             has_funds = balance is not None and balance >= self.trade_size
             
-            # Loss streak cooldown check (Smart Money)
+            # Overnight gate: disable Momentum + Smart Money 12AM-6AM PST (poor WR)
+            hour_pst = datetime.now(timezone.utc).astimezone(PST).hour
+            is_overnight = hour_pst < 6
+            overnight_blocked = is_overnight and state.key in ("momentum", "smart_money")
+            
+            # Loss streak cooldown check
             in_cooldown = state.cooldown_skips > 0
 
             # Shadow trade logging — track capped trades for validation
@@ -475,8 +480,10 @@ class LiveTrader:
                 self.log(f"   👻 {state.display}: SHADOW trade {sig.direction.upper()} @ edge {sig.edge_pct:.1f}% (capped, tracking outcome)")
                 self._record_shadow_trade(state, sig, snapshot)
             
-            if sig.should_trade and can_trade and strategy_cap and has_funds and not in_cooldown:
+            if sig.should_trade and can_trade and strategy_cap and has_funds and not in_cooldown and not overnight_blocked:
                 self._execute_live_trade(state, sig, snapshot)
+            elif sig.should_trade and overnight_blocked:
+                self.log(f"   🌙 {state.display}: Overnight gate — skipping (12AM-6AM PST)")
             elif sig.should_trade and in_cooldown:
                 state.cooldown_skips -= 1
                 self.log(f"   🛑 {state.display}: Skipping (cooldown, {state.cooldown_skips} skips left)")
@@ -628,7 +635,8 @@ class LiveTrader:
                     self.log(f"   ⚠️ Fill check error: {e}")
             
             if not filled:
-                # Check one more time
+                # Check one more time with extended wait
+                time.sleep(2)
                 try:
                     order_data = self.client.get_order(order_id)
                     size_matched = float(order_data.get("size_matched", 0)) if order_data else 0
@@ -637,16 +645,25 @@ class LiveTrader:
                         fill_price = float(order_data.get("price", fill_price))
                         filled = True
                     else:
-                        self.log(f"   ⚠️ Order not filled after 5s — canceling and skipping")
+                        self.log(f"   ⚠️ Order not filled after 7s — canceling and skipping")
                         try:
                             self.client.cancel_orders([order_id])
                         except Exception:
                             pass
                         return
-                except Exception:
-                    self.log(f"   ⚠️ Could not verify fill — recording with caution")
+                except Exception as e:
+                    self.log(f"   ❌ Could not verify fill: {e} — canceling and skipping (NOT recording)")
+                    try:
+                        self.client.cancel_orders([order_id])
+                    except Exception:
+                        pass
+                    return
         
-        # Record in database (only if filled or fill check unavailable)
+        if not filled:
+            self.log(f"   ❌ No order_id returned — cannot verify fill, skipping")
+            return
+        
+        # Record in database (ONLY if fill is confirmed)
         trade_data = {
             "timestamp": int(time.time()),
             "market_id": snapshot["slug"],
@@ -729,6 +746,9 @@ class LiveTrader:
                 if state.key == "smart_money" and state.consecutive_losses >= 2:
                     state.cooldown_skips = 2
                     self.log(f"   🛑 {state.display}: {state.consecutive_losses} losses in a row → cooling down (skip 2)")
+                elif state.key == "momentum" and state.consecutive_losses >= 3:
+                    state.cooldown_skips = 1
+                    self.log(f"   🛑 {state.display}: {state.consecutive_losses} losses in a row → cooling down (skip 1)")
             
             state.total_pnl += pnl
             state.trade_count += 1
