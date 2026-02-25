@@ -1,14 +1,17 @@
 """
-🏞 The Outsiders — Paper Trader v2
+🏞 The Outsiders — Paper Trader v3 (Contrarian / Inverse)
 
-Tests 3 new uncorrelated strategies on Polymarket BTC 5-min markets.
-No real money — tracks simulated P&L against real market outcomes.
-Mimics live trader as closely as possible (Kelly sizing, fees, slippage, cooldowns).
+Runs the SAME strategies as Paper Trader v2 but INVERTS every trade direction.
+If v2 says BUY UP → v3 buys DOWN, and vice versa.
 
-Strategies:
-1. 📈 Trend Rider — EMA crossover + VWAP (bullish/bearish trends)
-2. 🎯 VWAP Sniper — VWAP deviation + RSI extremes (ranging markets)
-3. ⚡ Volatility Spike — Volume surge + BB breakout (volatility events)
+The thesis: if v2 strategies are consistently wrong, v3 should be consistently right.
+This is a zero-cost way to test whether the signals have information content
+(even if the direction is backwards).
+
+Strategies (inverted):
+1. 📈↩️ Trend Rider Inverse — fades the trend signal
+2. 🎯↩️ VWAP Sniper Inverse — fades the mean reversion signal
+3. ⚡↩️ Vol Spike Inverse — fades the volatility breakout signal
 """
 import time
 import json
@@ -40,30 +43,30 @@ from src.strategies.volatility_spike import (
 )
 
 PST = timezone(timedelta(hours=-8))
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "paper_v2.db")
+DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "paper_v3.db")
 
-# Realistic fee simulation
-TAKER_FEE_PCT = 0.02  # 2% taker fee on entry
-SLIPPAGE_PCT = 0.005   # 0.5% avg slippage (limit orders sometimes fill worse)
+# Same realistic fee simulation as v2
+TAKER_FEE_PCT = 0.02
+SLIPPAGE_PCT = 0.005
 
 STRATEGY_CONFIG = {
-    "trend_rider": {
-        "name": "btc_5min_trend_rider_V2",
-        "display": "📈 Trend Rider",
+    "trend_rider_inv": {
+        "name": "btc_5min_trend_rider_INV",
+        "display": "📈↩️ Trend Rider INV",
         "params": TREND_RIDER_DEFAULTS.copy(),
         "signal_fn": trend_rider_signal,
         "format_fn": trend_rider_format,
     },
-    "vwap_sniper": {
-        "name": "btc_5min_vwap_sniper_V2",
-        "display": "🎯 VWAP Sniper",
+    "vwap_sniper_inv": {
+        "name": "btc_5min_vwap_sniper_INV",
+        "display": "🎯↩️ VWAP Sniper INV",
         "params": VWAP_SNIPER_DEFAULTS.copy(),
         "signal_fn": vwap_sniper_signal,
         "format_fn": vwap_sniper_format,
     },
-    "volatility_spike": {
-        "name": "btc_5min_vol_spike_V2",
-        "display": "⚡ Vol Spike",
+    "volatility_spike_inv": {
+        "name": "btc_5min_vol_spike_INV",
+        "display": "⚡↩️ Vol Spike INV",
         "params": VOL_SPIKE_DEFAULTS.copy(),
         "signal_fn": vol_spike_signal,
         "format_fn": vol_spike_format,
@@ -87,19 +90,18 @@ class StrategyState:
         self.total_pnl = 0.0
         self.consecutive_losses = 0
         self.cooldown_skips = 0
-        # Half Kelly
-        self.kelly_fraction = 0.04  # Default 4%, updated by Kelly calc
+        self.kelly_fraction = 0.04
         self.kelly_last_calc = 0
 
 
-class PaperTraderV2:
-    STARTING_BALANCE = 100.0
+class PaperTraderV3:
+    """Inverse/Contrarian paper trader — flips every signal from v2 strategies."""
 
-    # Kelly constants (same as live)
+    STARTING_BALANCE = 100.0
     KELLY_RECALC_INTERVAL = 20
     KELLY_MIN_TRADES = 15
-    KELLY_MIN_FRACTION = 0.01   # 1% floor
-    KELLY_MAX_FRACTION = 0.15   # 15% cap
+    KELLY_MIN_FRACTION = 0.01
+    KELLY_MAX_FRACTION = 0.15
 
     def __init__(self, max_per_strategy=5, max_total=15,
                  trade_size_min=5.0, trade_size_max=50.0):
@@ -119,7 +121,7 @@ class PaperTraderV2:
         signal.signal(signal.SIGTERM, self._shutdown)
 
     def _shutdown(self, signum, frame):
-        print("\n⏹️  Shutting down Paper Trader v2...")
+        print("\n⏹️  Shutting down Paper Trader v3 (Inverse)...")
         self.running = False
 
     def log(self, msg):
@@ -136,6 +138,7 @@ class PaperTraderV2:
                 market_id TEXT,
                 strategy TEXT,
                 direction TEXT,
+                original_direction TEXT,
                 entry_price REAL,
                 exit_price REAL,
                 quantity REAL,
@@ -152,38 +155,24 @@ class PaperTraderV2:
                 slippage REAL DEFAULT 0
             )
         """)
-        # Add fees/slippage columns if missing (upgrade existing DBs)
-        try:
-            conn.execute("ALTER TABLE trades ADD COLUMN fees REAL DEFAULT 0")
-        except:
-            pass
-        try:
-            conn.execute("ALTER TABLE trades ADD COLUMN slippage REAL DEFAULT 0")
-        except:
-            pass
         conn.commit()
         conn.close()
 
     def _calc_trade_size(self, strategy_key=None):
-        """Calculate trade size using Half Kelly per strategy."""
         if self.balance <= 0:
             return self.trade_size_min
-
-        fraction = 0.04  # fallback
+        fraction = 0.04
         if strategy_key and strategy_key in self.strategies:
             state = self.strategies[strategy_key]
             self._maybe_recalc_kelly(state)
             fraction = state.kelly_fraction
-
         size = self.balance * fraction
         return max(self.trade_size_min, min(self.trade_size_max, round(size, 2)))
 
     def _maybe_recalc_kelly(self, state):
-        """Recalculate Half Kelly for a strategy if enough new trades."""
         trades_since = state.trade_count - state.kelly_last_calc
         if trades_since < self.KELLY_RECALC_INTERVAL and state.kelly_last_calc > 0:
             return
-
         try:
             conn = sqlite3.connect(DB_PATH)
             rows = conn.execute(
@@ -194,10 +183,8 @@ class PaperTraderV2:
         except Exception as e:
             self.log(f"⚠️ Kelly calc error: {e}")
             return
-
         if len(rows) < self.KELLY_MIN_TRADES:
             return
-
         wins, losses = [], []
         for pnl, qty in rows:
             if qty and qty > 0:
@@ -206,22 +193,17 @@ class PaperTraderV2:
                     wins.append(ret)
                 else:
                     losses.append(abs(ret))
-
         if not wins or not losses:
             return
-
         p = len(wins) / len(rows)
         avg_win = sum(wins) / len(wins)
         avg_loss = sum(losses) / len(losses)
         b = avg_win / avg_loss if avg_loss > 0 else 1.0
-
         full_kelly = p - (1 - p) / b
         half_kelly = full_kelly / 2
-
         old = state.kelly_fraction
         state.kelly_fraction = max(self.KELLY_MIN_FRACTION, min(self.KELLY_MAX_FRACTION, half_kelly))
         state.kelly_last_calc = state.trade_count
-
         if abs(old - state.kelly_fraction) > 0.001:
             self.log(f"📐 {state.display} Kelly update: {old*100:.1f}% → {state.kelly_fraction*100:.1f}% "
                      f"(WR={p*100:.0f}%, W/L={b:.2f}x, n={len(rows)})")
@@ -232,11 +214,12 @@ class PaperTraderV2:
     def _insert_trade(self, data):
         conn = sqlite3.connect(DB_PATH)
         cur = conn.execute(
-            """INSERT INTO trades (timestamp, market_id, strategy, direction, entry_price,
-               quantity, edge_pct, confidence, signal_data, status, created_at, fees, slippage)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)""",
+            """INSERT INTO trades (timestamp, market_id, strategy, direction, original_direction,
+               entry_price, quantity, edge_pct, confidence, signal_data, status, created_at, fees, slippage)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)""",
             (data["timestamp"], data["market_id"], data["strategy"], data["direction"],
-             data["entry_price"], data["quantity"], data["edge_pct"], data["confidence"],
+             data["original_direction"], data["entry_price"], data["quantity"],
+             data["edge_pct"], data["confidence"],
              json.dumps(data.get("signal_data", {})),
              datetime.now(timezone.utc).isoformat(),
              data.get("fees", 0), data.get("slippage", 0))
@@ -256,14 +239,11 @@ class PaperTraderV2:
         conn.close()
 
     def _check_open_trades(self, state, snapshot):
-        """Check if any open trades have resolved."""
         remaining = []
         now = int(time.time())
 
         for trade in state.open_trades:
             slug = trade["market_slug"]
-
-            # Stuck trade cleanup — if open > 30 min on a 5-min market, force close as loss
             age_min = (now - trade.get("timestamp", now)) / 60
             if age_min > 30:
                 pnl = -(trade["quantity"] * trade["entry_price"])
@@ -273,11 +253,9 @@ class PaperTraderV2:
                 state.consecutive_losses += 1
                 self.balance += pnl
                 self._close_trade(trade["id"], 0.0, pnl, -100.0, "stuck_timeout")
-                self.log(f"   ⏰ {state.display}: Stuck trade closed after {age_min:.0f}min | "
-                         f"PnL: ${pnl:+.2f}")
+                self.log(f"   ⏰ {state.display}: Stuck trade closed after {age_min:.0f}min | PnL: ${pnl:+.2f}")
                 continue
 
-            # Check resolution
             resolution = check_market_resolution(slug)
             if resolution is None:
                 remaining.append(trade)
@@ -291,7 +269,6 @@ class PaperTraderV2:
             won = (trade["direction"] == actual_winner)
 
             if won:
-                # Net P&L after fees: payout - cost - entry fee
                 gross_pnl = trade["quantity"] * (1.0 - trade["entry_price"])
                 pnl = gross_pnl - trade.get("fees", 0)
                 pnl_pct = (pnl / (trade["entry_price"] * trade["quantity"])) * 100
@@ -299,7 +276,6 @@ class PaperTraderV2:
                 state.wins += 1
                 state.consecutive_losses = 0
             else:
-                # Loss = full cost (already paid fees on entry)
                 pnl = -(trade["quantity"] * trade["entry_price"]) - trade.get("fees", 0)
                 pnl_pct = -100.0
                 exit_reason = "loss"
@@ -309,35 +285,36 @@ class PaperTraderV2:
             state.total_pnl += pnl
             state.trade_count += 1
             self.balance += pnl
-
             self._close_trade(trade["id"], 1.0 if won else 0.0, pnl, pnl_pct, exit_reason)
 
+            orig = trade.get("original_direction", "?").upper()
             emoji = "✅" if won else "❌"
-            self.log(f"   {emoji} {state.display}: {trade['direction'].upper()} → "
-                     f"{'WON' if won else 'LOST'} | PnL: ${pnl:+.2f} (fee: ${trade.get('fees', 0):.2f}) | "
+            self.log(f"   {emoji} {state.display}: {orig}→{trade['direction'].upper()} → "
+                     f"{'WON' if won else 'LOST'} | PnL: ${pnl:+.2f} | "
                      f"Balance: ${self.balance:.2f} | Record: {state.wins}W-{state.losses}L")
 
         state.open_trades = remaining
 
+    def _flip_direction(self, direction):
+        """The core inversion: up→down, down→up."""
+        return "down" if direction == "up" else "up"
+
     def run(self):
-        """Main paper trading loop."""
-        print("🏞 The Outsiders — Paper Trader v2")
+        print("🏞 The Outsiders — Paper Trader v3 (INVERSE / CONTRARIAN)")
         print("=" * 60)
-        print("📝 PAPER TRADING — No real money, real market data!")
+        print("🔄 Every signal is FLIPPED — if v2 buys UP, v3 buys DOWN")
         print(f"💰 Starting balance: ${self.STARTING_BALANCE:.2f}")
         print(f"📊 Simulating: {TAKER_FEE_PCT*100}% fees + {SLIPPAGE_PCT*100}% slippage")
         print("=" * 60)
 
-        # Initialize Kelly fractions
         for s in self.strategies.values():
             self._maybe_recalc_kelly(s)
 
-        self.log("📡 Strategies (Half Kelly sizing):")
+        self.log("📡 Strategies (INVERTED, Half Kelly):")
         for s in self.strategies.values():
             p = s.params
             size = self._calc_trade_size(strategy_key=s.key)
-            self.log(f"   {s.display}: TP={p['take_profit_pct']}% | "
-                     f"SL={p['stop_loss_pct']}% | Edge>={p['min_edge_pct']}% | "
+            self.log(f"   {s.display}: Edge>={p['min_edge_pct']}% | "
                      f"Kelly={s.kelly_fraction*100:.1f}% (${size:.2f})")
         self.log(f"🔒 Max positions: {self.max_per_strategy}/strategy, {self.max_total} total")
         print("=" * 60)
@@ -356,23 +333,20 @@ class PaperTraderV2:
         self._print_summary()
 
     def _run_cycle(self):
-        """Single trading cycle."""
         snapshot = get_full_market_snapshot()
         if not snapshot:
             return
 
-        # Check open trades for resolution
         for state in self.strategies.values():
             self._check_open_trades(state, snapshot)
 
-        # Get market data (30 min for EMA21 + BB20)
         candles = get_recent_candles(minutes=30)
         if not candles or len(candles) < 5:
             return
 
         kraken_book = fetch_kraken_orderbook()
 
-        # Liquidity check (same as live trader)
+        # Liquidity check
         up_ob = snapshot.get("up_orderbook")
         down_ob = snapshot.get("down_orderbook")
         if up_ob and down_ob:
@@ -384,12 +358,10 @@ class PaperTraderV2:
 
         total_open = self._total_open()
 
-        # Run each strategy
         for key, state in self.strategies.items():
             if snapshot["slug"] in state.traded_slugs:
                 continue
 
-            # Generate signal
             sig = state.signal_fn(
                 candles=candles,
                 market_up_price=snapshot["up_price"],
@@ -398,30 +370,28 @@ class PaperTraderV2:
                 params=state.params,
             )
 
+            # Log the original signal for transparency
             fmt = state.format_fn(sig)
-            self.log(f"   {state.display}: {fmt}")
+            self.log(f"   {state.display} (original): {fmt}")
 
             can_trade = total_open < self.max_total
             strategy_cap = len(state.open_trades) < self.max_per_strategy
-
-            # Kelly-based trade size
             trade_size = self._calc_trade_size(strategy_key=key)
             has_funds = self.balance >= trade_size
-
-            # Loss streak cooldown (same logic as live Smart Money)
             in_cooldown = state.cooldown_skips > 0
 
             if sig.should_trade and can_trade and strategy_cap and has_funds and not in_cooldown:
-                entry_price = snapshot["up_price"] if sig.direction == "up" else snapshot["down_price"]
+                # *** THE FLIP ***
+                original_direction = sig.direction
+                inverted_direction = self._flip_direction(original_direction)
 
-                # Simulate slippage — actual fill slightly worse
+                # Use the INVERTED direction's market price
+                entry_price = snapshot["up_price"] if inverted_direction == "up" else snapshot["down_price"]
+
                 slippage = entry_price * SLIPPAGE_PCT
-                fill_price = min(entry_price + slippage, 0.99)  # Can't exceed $0.99
-
+                fill_price = min(entry_price + slippage, 0.99)
                 quantity = trade_size / fill_price if fill_price > 0 else 0
                 cost = fill_price * quantity
-
-                # Simulate taker fee on entry
                 fee = cost * TAKER_FEE_PCT
                 total_cost = cost + fee
 
@@ -429,7 +399,8 @@ class PaperTraderV2:
                     "timestamp": int(time.time()),
                     "market_id": snapshot["slug"],
                     "strategy": state.name,
-                    "direction": sig.direction,
+                    "direction": inverted_direction,
+                    "original_direction": original_direction,
                     "entry_price": fill_price,
                     "quantity": quantity,
                     "edge_pct": sig.edge_pct,
@@ -440,11 +411,12 @@ class PaperTraderV2:
                 }
 
                 trade_id = self._insert_trade(trade_data)
-                self.balance -= total_cost  # Reserve funds + fees
+                self.balance -= total_cost
 
                 state.open_trades.append({
                     "id": trade_id,
-                    "direction": sig.direction,
+                    "direction": inverted_direction,
+                    "original_direction": original_direction,
                     "entry_price": fill_price,
                     "quantity": quantity,
                     "cost": cost,
@@ -453,11 +425,11 @@ class PaperTraderV2:
                     "timestamp": int(time.time()),
                 })
 
-                emoji = "🟢" if sig.direction == "up" else "🔴"
-                self.log(f"   {emoji} {state.display} PAPER: {sig.direction.upper()} @ "
-                         f"${fill_price:.3f} | Qty: {quantity:.1f} | "
-                         f"Cost: ${total_cost:.2f} (fee: ${fee:.2f}) | Edge: {sig.edge_pct:.1f}% | "
-                         f"Kelly: {state.kelly_fraction*100:.1f}%")
+                orig_emoji = "🟢" if original_direction == "up" else "🔴"
+                inv_emoji = "🔴" if original_direction == "up" else "🟢"
+                self.log(f"   🔄 {state.display}: {orig_emoji}{original_direction.upper()} → "
+                         f"{inv_emoji}{inverted_direction.upper()} @ ${fill_price:.3f} | "
+                         f"Qty: {quantity:.1f} | Cost: ${total_cost:.2f} | Edge: {sig.edge_pct:.1f}%")
                 total_open += 1
 
             elif sig.should_trade and in_cooldown:
@@ -465,25 +437,18 @@ class PaperTraderV2:
                 self.log(f"   🛑 {state.display}: Skipping (cooldown, {state.cooldown_skips} skips left)")
             elif sig.should_trade and not has_funds:
                 self.log(f"   ⚠️ {state.display}: Signal but no funds (${self.balance:.2f})")
-            elif sig.should_trade and not can_trade:
-                self.log(f"   ⚠️ {state.display}: Signal but at max positions ({self.max_total})")
-            elif sig.should_trade and not strategy_cap:
-                self.log(f"   ⚠️ {state.display}: Signal but strategy cap ({self.max_per_strategy})")
 
             state.traded_slugs.add(snapshot["slug"])
 
     def _print_summary(self):
-        """Print final summary."""
         print("\n" + "=" * 60)
-        print("📊 Paper Trader v2 — Final Summary")
+        print("📊 Paper Trader v3 (INVERSE) — Final Summary")
         print("=" * 60)
-        total_fees = 0
         for s in self.strategies.values():
             t = s.wins + s.losses
             wr = s.wins / t * 100 if t > 0 else 0
             print(f"  {s.display}: {t} trades ({s.wins}W / {s.losses}L) | "
-                  f"WR: {wr:.1f}% | P&L: ${s.total_pnl:+.2f} | "
-                  f"Kelly: {s.kelly_fraction*100:.1f}%")
+                  f"WR: {wr:.1f}% | P&L: ${s.total_pnl:+.2f}")
         total_pnl = sum(s.total_pnl for s in self.strategies.values())
         print(f"\n  Total P&L: ${total_pnl:+.2f} (after fees + slippage)")
         print(f"  Balance: ${self.balance:.2f} (started ${self.STARTING_BALANCE:.2f})")
@@ -492,5 +457,5 @@ class PaperTraderV2:
 
 
 if __name__ == "__main__":
-    trader = PaperTraderV2()
+    trader = PaperTraderV3()
     trader.run()

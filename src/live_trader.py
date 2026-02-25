@@ -35,6 +35,11 @@ from src.strategies.btc_5min import (
     generate_signal as momentum_signal,
     format_signal_message as momentum_format,
 )
+from src.strategies.trend_rider import (
+    generate_signal as trend_rider_signal,
+    format_signal_message as trend_rider_format,
+    DEFAULTS as TREND_RIDER_DEFAULTS,
+)
 from src.strategies.mean_reversion import (
     generate_signal as meanrev_signal,
     format_signal_message as meanrev_format,
@@ -75,11 +80,17 @@ def load_momentum_params():
 
 
 STRATEGY_CONFIG = {
-    "momentum": {
-        "name": "btc_5min_momentum_LIVE",
-        "display": "⚡ Momentum",
-        "load_params": load_momentum_params,
+    "trend_rider": {
+        "name": "btc_5min_trend_rider_LIVE",
+        "display": "📈 Trend Rider",
+        "load_params": lambda: TREND_RIDER_DEFAULTS.copy(),
     },
+    # REPLACED by Trend Rider — backtested 56% WR (151 trades), 73% OOS (37 trades)
+    # "momentum": {
+    #     "name": "btc_5min_momentum_LIVE",
+    #     "display": "⚡ Momentum",
+    #     "load_params": load_momentum_params,
+    # },
     # PAUSED — 20% WR on v3 (10 trades), -$74 across v2+v3. Revisit later.
     # "mean_reversion": {
     #     "name": "btc_5min_meanrev_LIVE",
@@ -581,7 +592,7 @@ class LiveTrader:
             # Overnight gate: disable Momentum + Smart Money 12AM-6AM PST (poor WR)
             hour_pst = datetime.now(timezone.utc).astimezone(PST).hour
             is_overnight = hour_pst < 6
-            overnight_blocked = is_overnight and state.key in ("momentum", "smart_money")
+            overnight_blocked = is_overnight and state.key in ("trend_rider", "momentum", "smart_money")
             
             # Loss streak cooldown check
             in_cooldown = state.cooldown_skips > 0
@@ -618,7 +629,9 @@ class LiveTrader:
             timestamp=int(time.time()),
         )
         
-        if key == "momentum":
+        if key == "trend_rider":
+            sig = trend_rider_signal(candles=candles, **common)
+        elif key == "momentum":
             sig = momentum_signal(candles=candles[-state.params.get("lookback_minutes", 15):], **common)
         elif key == "mean_reversion":
             sig = meanrev_signal(candles=candles, **common)
@@ -682,7 +695,8 @@ class LiveTrader:
         return sig
     
     def _format_signal(self, key, sig):
-        fmts = {"momentum": momentum_format, "mean_reversion": meanrev_format,
+        fmts = {"trend_rider": trend_rider_format, "momentum": momentum_format,
+                "mean_reversion": meanrev_format,
                 "orderbook_imbalance": ob_format, "smart_money": smart_format}
         return fmts.get(key, str)(sig)
     
@@ -908,7 +922,7 @@ class LiveTrader:
                 if state.key == "smart_money" and state.consecutive_losses >= 2:
                     state.cooldown_skips = 2
                     self.log(f"   🛑 {state.display}: {state.consecutive_losses} losses in a row → cooling down (skip 2)")
-                elif state.key == "momentum" and state.consecutive_losses >= 3:
+                elif state.key in ("momentum", "trend_rider") and state.consecutive_losses >= 3:
                     state.cooldown_skips = 1
                     self.log(f"   🛑 {state.display}: {state.consecutive_losses} losses in a row → cooling down (skip 1)")
             
