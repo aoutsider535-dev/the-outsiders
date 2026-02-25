@@ -407,10 +407,15 @@ def render_equity_chart(df, starting_balance, selected_strategies=None, real_bal
 
     # Build equity curve
     closed["cumulative_pnl"] = closed["pnl"].cumsum()
-    # Always use starting_balance as anchor — shows true historical trajectory
-    # The curve should reflect DB P&L from inception (gross, before fees)
-    effective_start = starting_balance
-    closed["balance"] = effective_start + closed["cumulative_pnl"]
+    db_final = starting_balance + closed["cumulative_pnl"].iloc[-1] if len(closed) else starting_balance
+
+    if real_balance is not None and real_balance > 0 and db_final != starting_balance:
+        # Scale the curve so it preserves the shape (peaks/valleys) but endpoints
+        # match reality: starts at starting_balance, ends at real_balance
+        scale = (real_balance - starting_balance) / (db_final - starting_balance)
+        closed["balance"] = starting_balance + closed["cumulative_pnl"] * scale
+    else:
+        closed["balance"] = starting_balance + closed["cumulative_pnl"]
 
     fig = go.Figure()
 
