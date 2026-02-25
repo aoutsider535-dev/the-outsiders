@@ -325,8 +325,21 @@ st.markdown("""
         color: #475569 !important;
         font-weight: 600 !important;
     }
-    div[data-baseweb="select"] > div { background-color: #ffffff !important; border-color: #e2e8f0 !important; }
+    div[data-baseweb="select"] > div { background-color: #ffffff !important; border-color: #e2e8f0 !important; color: #1e293b !important; }
+    div[data-baseweb="select"] span { color: #1e293b !important; }
+    div[data-baseweb="select"] input { color: #1e293b !important; }
+    div[data-baseweb="popover"] li { color: #1e293b !important; }
+    div[data-baseweb="menu"] { background-color: #ffffff !important; }
+    div[data-baseweb="menu"] li { color: #1e293b !important; }
+    div[data-baseweb="menu"] li:hover { background-color: #f1f5f9 !important; }
+    /* Multiselect tags */
+    span[data-baseweb="tag"] { background-color: #e2e8f0 !important; color: #1e293b !important; }
+    span[data-baseweb="tag"] span { color: #1e293b !important; }
+    /* Slider */
+    .stSlider div[data-baseweb="slider"] div { color: #1e293b !important; }
     .stMarkdown h3 { color: #1e293b; }
+    /* General text */
+    p, span, div { color: #1e293b; }
 </style>
 """, unsafe_allow_html=True)
 
