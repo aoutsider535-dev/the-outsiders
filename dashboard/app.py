@@ -833,6 +833,10 @@ with tab_paper_v2:
             </div>
             """, unsafe_allow_html=True)
 
+        # Add time_pst column for charts
+        if "time_pst" not in v2_closed.columns and "timestamp" in v2_closed.columns:
+            v2_closed["time_pst"] = pd.to_datetime(v2_closed["timestamp"], unit="s", utc=True).dt.tz_convert("US/Pacific").dt.strftime("%m/%d %I:%M %p")
+
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown('<div class="section-header">📈 Paper v2 Equity Curve</div>', unsafe_allow_html=True)
         render_equity_chart(v2_closed, PAPER_V2_STARTING)
