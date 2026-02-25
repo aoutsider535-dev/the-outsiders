@@ -51,6 +51,7 @@ from src.strategies.smart_money import (
     DEFAULT_PARAMS as SMART_DEFAULTS,
 )
 from src.database import init_db, insert_trade, close_trade, DB_PATH, get_connection
+from src.data.binance import get_derivatives_signals
 from src.redeemer import Redeemer
 
 PST = timezone(timedelta(hours=-8))
@@ -537,11 +538,19 @@ class LiveTrader:
         elif kraken_book:
             orderbook_data = kraken_book
         
+        # Fetch Binance derivatives signals (funding rate + open interest)
+        btc_dir = None
+        if candles and len(candles) >= 2:
+            btc_dir = "up" if candles[-1]["close"] > candles[-2]["close"] else "down"
+        derivatives = get_derivatives_signals(btc_direction=btc_dir)
+        
         # Log market state
         self.log(f"📊 {snapshot['title']}")
         self.log(f"   Polymarket: Up={snapshot['up_price']:.3f} | Down={snapshot['down_price']:.3f}")
         if ticker:
             self.log(f"   BTC: ${ticker['last']:,.2f}")
+        if derivatives:
+            self.log(f"   📡 Derivatives: {derivatives['description']} | Score: {derivatives['combined_score']:+.2f}")
         
         total_open = self._total_open()
         if total_open > 0:
@@ -553,7 +562,8 @@ class LiveTrader:
                 continue
             
             sig = self._generate_signal(key, state, candles, orderbook_data, 
-                                         snapshot, up_ob, down_ob, kraken_book)
+                                         snapshot, up_ob, down_ob, kraken_book,
+                                         derivatives=derivatives)
             if sig is None:
                 continue
             
@@ -598,7 +608,7 @@ class LiveTrader:
             state.traded_slugs.add(snapshot["slug"])
     
     def _generate_signal(self, key, state, candles, orderbook_data, 
-                          snapshot, up_ob, down_ob, kraken_book):
+                          snapshot, up_ob, down_ob, kraken_book, derivatives=None):
         """Generate signal for a specific strategy."""
         common = dict(
             orderbook_data=orderbook_data,
@@ -609,15 +619,67 @@ class LiveTrader:
         )
         
         if key == "momentum":
-            return momentum_signal(candles=candles[-state.params.get("lookback_minutes", 15):], **common)
+            sig = momentum_signal(candles=candles[-state.params.get("lookback_minutes", 15):], **common)
         elif key == "mean_reversion":
-            return meanrev_signal(candles=candles, **common)
+            sig = meanrev_signal(candles=candles, **common)
         elif key == "orderbook_imbalance":
-            return ob_signal(candles=candles, up_orderbook=up_ob, down_orderbook=down_ob,
+            sig = ob_signal(candles=candles, up_orderbook=up_ob, down_orderbook=down_ob,
                            kraken_orderbook=kraken_book, **common)
         elif key == "smart_money":
-            return smart_signal(candles=candles, **common)
-        return None
+            sig = smart_signal(candles=candles, **common)
+        else:
+            return None
+        
+        # Apply derivatives overlay (funding rate + open interest)
+        if sig and derivatives and sig.should_trade:
+            sig = self._apply_derivatives_overlay(sig, derivatives)
+        
+        return sig
+    
+    def _apply_derivatives_overlay(self, sig, derivatives):
+        """Adjust signal confidence/edge based on Binance derivatives data.
+        
+        Funding rate and OI either CONFIRM or CONTRADICT the signal direction.
+        - Confirmation: boost edge by up to +3%
+        - Contradiction: reduce edge by up to -3%, may kill the trade
+        """
+        deriv_score = derivatives["combined_score"]  # -1 (bearish) to +1 (bullish)
+        
+        # How well does derivatives data align with signal direction?
+        if sig.direction == "up":
+            alignment = deriv_score  # Positive = bullish = confirms UP
+        else:
+            alignment = -deriv_score  # Negative combined = bearish = confirms DOWN
+        
+        # Adjust edge: ±3% max based on alignment
+        edge_adjustment = alignment * 3.0
+        original_edge = sig.edge_pct
+        sig.edge_pct += edge_adjustment
+        
+        # Adjust confidence proportionally
+        conf_adjustment = alignment * 0.03  # ±3% confidence
+        sig.confidence += conf_adjustment
+        
+        # Store derivatives data in signal for logging/DB
+        if hasattr(sig, 'to_dict'):
+            orig_to_dict = sig.to_dict
+            def enhanced_to_dict():
+                d = orig_to_dict()
+                d["funding_score"] = derivatives.get("funding_score", 0)
+                d["oi_score"] = derivatives.get("oi_score", 0)
+                d["deriv_combined"] = deriv_score
+                d["deriv_edge_adj"] = edge_adjustment
+                d["funding_rate_pct"] = derivatives.get("funding_rate_pct")
+                d["oi_change_pct"] = derivatives.get("oi_change_pct")
+                return d
+            sig.to_dict = enhanced_to_dict
+        
+        # If derivatives strongly contradict (alignment < -0.5), reduce should_trade
+        if alignment < -0.5 and sig.edge_pct < sig.confidence * 0.5:
+            sig.should_trade = False
+            sig.reason = f"⚠️ Derivatives contradiction ({derivatives['description']}) | " + sig.reason
+        
+        return sig
     
     def _format_signal(self, key, sig):
         fmts = {"momentum": momentum_format, "mean_reversion": meanrev_format,
