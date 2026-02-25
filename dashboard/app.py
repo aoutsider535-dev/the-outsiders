@@ -330,10 +330,17 @@ st.markdown("""
     div[data-baseweb="select"] span { color: #1e293b !important; }
     div[data-baseweb="select"] input { color: #1e293b !important; }
     /* Dropdown menu — white text on dark background */
-    div[data-baseweb="popover"] li { color: #ffffff !important; }
+    div[data-baseweb="popover"] { background-color: #1e293b !important; }
+    div[data-baseweb="popover"] * { color: #ffffff !important; }
     div[data-baseweb="menu"] { background-color: #1e293b !important; }
+    div[data-baseweb="menu"] * { color: #ffffff !important; }
     div[data-baseweb="menu"] li { color: #ffffff !important; }
     div[data-baseweb="menu"] li:hover { background-color: #334155 !important; }
+    ul[role="listbox"] { background-color: #1e293b !important; }
+    ul[role="listbox"] li { color: #ffffff !important; }
+    ul[role="listbox"] li:hover { background-color: #334155 !important; }
+    [data-baseweb="menu"] [role="option"] { color: #ffffff !important; }
+    [data-baseweb="menu"] [role="option"]:hover { background-color: #334155 !important; }
     /* Multiselect tags */
     span[data-baseweb="tag"] { background-color: #e2e8f0 !important; color: #1e293b !important; }
     span[data-baseweb="tag"] span { color: #1e293b !important; }
