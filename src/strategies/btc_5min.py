@@ -21,7 +21,8 @@ from typing import Optional
 # Default strategy parameters
 DEFAULT_PARAMS = {
     "lookback_minutes": 15,
-    "min_edge_pct": 7.0,
+    "min_edge_pct": 8.0,
+    "max_edge_pct": 12.0,
     "take_profit_pct": 40.0,
     "stop_loss_pct": 50.0,
     "risk_per_trade_pct": 5.0,
@@ -272,7 +273,12 @@ def generate_signal(candles, orderbook_data=None, market_up_price=0.5,
     # Should we trade?
     min_edge = params["min_edge_pct"]
     min_confidence = params.get("min_confidence", 0.57)
-    if signal.edge_pct >= min_edge and signal.confidence >= min_confidence:
+    max_edge = params.get("max_edge_pct", 12.0)
+    
+    if signal.edge_pct > max_edge:
+        signal.reason = (f"⚠️ Momentum: Edge {signal.edge_pct:.1f}% > {max_edge}% cap | "
+                        f"Best direction: {signal.direction}")
+    elif signal.edge_pct >= min_edge and signal.confidence >= min_confidence:
         signal.should_trade = True
         signal.reason = (f"Edge {signal.edge_pct:.1f}% >= {min_edge}% threshold | "
                         f"Direction: {signal.direction} @ {signal.confidence:.1%}")

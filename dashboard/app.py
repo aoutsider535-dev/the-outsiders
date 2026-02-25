@@ -23,6 +23,7 @@ STRATEGY_VERSIONS = {
     "btc_5min_momentum_LIVE": [
         {"version": "v1", "start": 0, "label": "Original"},
         {"version": "v2", "start": 1771905600, "label": "Min edge 7%, conf 57%"},
+        {"version": "v3", "start": 1771977600, "label": "Edge 8-12% sweet spot"},
     ],
     "btc_5min_meanrev_LIVE": [
         {"version": "v1", "start": 0, "label": "Original"},
