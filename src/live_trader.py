@@ -229,13 +229,23 @@ class LiveTrader:
         if trades_since < self.KELLY_RECALC_INTERVAL and state.kelly_last_calc > 0:
             return
         
-        # Query recent closed trades for this strategy
+        # Query real on-chain trades first, fall back to DB trades
         try:
             conn = sqlite3.connect(DB_PATH)
-            rows = conn.execute(
-                "SELECT pnl, quantity FROM trades WHERE strategy = ? AND status = 'closed' AND is_simulated = 0",
-                (state.name,)
-            ).fetchall()
+            # Prefer real_trades (CSV-verified, no phantom trades)
+            try:
+                rows = conn.execute(
+                    "SELECT pnl, usdc_spent FROM real_trades WHERE strategy = ? AND won IS NOT NULL",
+                    (state.name,)
+                ).fetchall()
+            except Exception:
+                rows = []
+            if len(rows) < self.KELLY_MIN_TRADES:
+                # Fall back to trades table for new trades since last CSV import
+                rows = conn.execute(
+                    "SELECT pnl, quantity * entry_price FROM trades WHERE strategy = ? AND status = 'closed' AND is_simulated = 0",
+                    (state.name,)
+                ).fetchall()
             conn.close()
         except Exception as e:
             self.log(f"⚠️ Kelly calc error: {e}")
@@ -245,9 +255,9 @@ class LiveTrader:
             return  # Not enough data, keep default
         
         wins, losses = [], []
-        for pnl, qty in rows:
-            if qty and qty > 0:
-                ret = pnl / qty  # return per dollar
+        for pnl, cost in rows:
+            if cost and cost > 0:
+                ret = pnl / cost  # return per dollar spent
                 if pnl > 0:
                     wins.append(ret)
                 else:
