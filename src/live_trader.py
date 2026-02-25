@@ -50,7 +50,7 @@ from src.strategies.smart_money import (
     format_signal_message as smart_format,
     DEFAULT_PARAMS as SMART_DEFAULTS,
 )
-from src.database import init_db, insert_trade, close_trade, DB_PATH
+from src.database import init_db, insert_trade, close_trade, DB_PATH, get_connection
 from src.redeemer import Redeemer
 
 PST = timezone(timedelta(hours=-8))

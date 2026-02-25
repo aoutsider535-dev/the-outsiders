@@ -118,9 +118,27 @@ class Redeemer:
         # Rate limiting state
         self._last_redeem_ts = 0
         self._redeem_timestamps = []  # Rolling window for hourly cap
+        self._local_nonce = None  # Track nonce locally to avoid RPC returning stale/zero
 
     def _ts(self) -> str:
         return datetime.now(timezone.utc).astimezone(PST).strftime("%I:%M:%S %p")
+
+    def _get_nonce(self) -> int:
+        """Get reliable nonce, using local tracking to avoid RPC returning 0/stale."""
+        try:
+            rpc_nonce = self.w3.eth.get_transaction_count(self.eoa_address, "pending")
+        except Exception:
+            rpc_nonce = 0
+
+        if self._local_nonce is None:
+            self._local_nonce = rpc_nonce
+        else:
+            # Use whichever is higher — RPC might be ahead (tx confirmed) or behind (stale)
+            self._local_nonce = max(self._local_nonce, rpc_nonce)
+
+        nonce = self._local_nonce
+        self._local_nonce += 1  # Increment for next tx
+        return nonce
 
     def _rate_limit_ok(self) -> bool:
         """Check if we're within rate limits."""
@@ -224,7 +242,7 @@ class Redeemer:
                 "from": self.eoa_address,
                 "to": Web3.to_checksum_address(FACTORY_ADDRESS),
                 "data": calldata,
-                "nonce": self.w3.eth.get_transaction_count(self.eoa_address, "pending"),
+                "nonce": self._get_nonce(),
                 "gas": 300_000,
                 "gasPrice": max(self.w3.eth.gas_price, 30_000_000_000),  # min 30 Gwei
                 "chainId": 137,
@@ -239,7 +257,7 @@ class Redeemer:
             logger.info(f"[{self._ts()}] 📤 Redeem tx sent: {tx_hash_hex}")
 
             # Wait for receipt (up to 60s)
-            receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+            receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
 
             self._record_redeem()
 
