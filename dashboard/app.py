@@ -391,7 +391,7 @@ def render_kpi_row(balance, total_pnl, roi, stats, open_count, active_strats):
 
 
 def render_equity_chart(df, starting_balance, selected_strategies=None, real_balance=None):
-    """Render P&L equity curve with strategy filters."""
+    """Render P&L equity curve showing portfolio balance and per-strategy contributions."""
     closed = df[df["status"] == "closed"].copy() if "status" in df.columns else df.copy()
     if closed.empty:
         st.info("No closed trades to chart.")
@@ -404,35 +404,14 @@ def render_equity_chart(df, starting_balance, selected_strategies=None, real_bal
         return
 
     closed = closed.sort_values("timestamp")
-
-    # Build equity curve — use real balance history if available
     closed["cumulative_pnl"] = closed["pnl"].cumsum()
-    effective_start = starting_balance
-    use_real_history = False
-
-    try:
-        from src.database import DB_PATH as _main_db
-        import sqlite3 as _sq3
-        _bconn = _sq3.connect(_main_db)
-        bh = pd.read_sql_query("SELECT timestamp, balance FROM balance_history ORDER BY timestamp", _bconn)
-        _bconn.close()
-        if not bh.empty and len(bh) >= 5:
-            # Merge real balance onto trades by nearest timestamp
-            closed = closed.sort_values("timestamp")
-            closed["real_balance"] = closed["timestamp"].apply(
-                lambda t: bh.iloc[(bh["timestamp"] - t).abs().argsort().iloc[0]]["balance"]
-            )
-            closed["balance"] = closed["real_balance"]
-            use_real_history = True
-    except Exception:
-        pass
-
-    if not use_real_history:
-        closed["balance"] = effective_start + closed["cumulative_pnl"]
+    closed["balance"] = starting_balance + closed["cumulative_pnl"]
 
     fig = go.Figure()
 
     strats = closed["strategy"].unique()
+
+    # Overall equity curve
     if len(strats) > 1:
         fig.add_trace(go.Scatter(
             x=closed["time_pst"], y=closed["balance"],
@@ -441,6 +420,7 @@ def render_equity_chart(df, starting_balance, selected_strategies=None, real_bal
             hovertemplate="$%{y:.2f}<extra>Overall</extra>"
         ))
 
+    # Per-strategy contribution (each starts at starting_balance)
     for strat in strats:
         s_df = closed[closed["strategy"] == strat]
         fig.add_trace(go.Scatter(
