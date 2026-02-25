@@ -418,6 +418,14 @@ class LiveTrader:
         up_ob = snapshot.get("up_orderbook")
         down_ob = snapshot.get("down_orderbook")
         
+        # Liquidity check — skip if Polymarket orderbook is empty/thin
+        if up_ob and down_ob:
+            total_depth = up_ob.get("bid_depth", 0) + up_ob.get("ask_depth", 0) + \
+                          down_ob.get("bid_depth", 0) + down_ob.get("ask_depth", 0)
+            if total_depth < 50:  # Less than $50 total depth = too thin
+                self.log(f"⚠️ Thin orderbook (depth: ${total_depth:.0f}) — skipping cycle")
+                return
+        
         orderbook_data = None
         if up_ob and down_ob:
             orderbook_data = {
