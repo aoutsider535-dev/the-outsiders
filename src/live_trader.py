@@ -282,6 +282,76 @@ class LiveTrader:
             self.log(f"📐 {state.display} Kelly update: {old*100:.1f}% → {state.kelly_fraction*100:.1f}% "
                      f"(WR={p*100:.0f}%, W/L={b:.2f}x, n={len(rows)})")
     
+    def _recover_open_trades(self):
+        """Load open LIVE trades from DB into strategy state on startup.
+        This prevents trades from becoming orphaned after a restart."""
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            conn.row_factory = sqlite3.Row
+            open_trades = conn.execute(
+                "SELECT id, strategy, market_id, direction, entry_price, quantity, signal_data "
+                "FROM trades WHERE strategy LIKE '%_LIVE' AND status = 'open' AND is_simulated = 0"
+            ).fetchall()
+            conn.close()
+            
+            now = int(time.time())
+            recovered = 0
+            cleaned = 0
+            
+            for t in open_trades:
+                # Parse signal_data for condition_id
+                sig_data = {}
+                try:
+                    import json as _json
+                    sig_data = _json.loads(t["signal_data"]) if t["signal_data"] else {}
+                except Exception:
+                    pass
+                
+                # If trade is >30 min old, it's stuck — auto-clean
+                if now - (t["id"] * 0) > 0:  # check timestamp from market_id
+                    try:
+                        mid_ts = int(t["market_id"].split("-")[-1])
+                        age_min = (now - mid_ts) / 60
+                        if age_min > 30:
+                            conn2 = sqlite3.connect(DB_PATH)
+                            conn2.execute(
+                                "UPDATE trades SET status='closed', exit_reason='stuck_startup', pnl=0, closed_at=datetime('now') WHERE id=?",
+                                (t["id"],))
+                            conn2.commit()
+                            conn2.close()
+                            cleaned += 1
+                            continue
+                    except Exception:
+                        pass
+                
+                # Find matching strategy
+                strat_key = None
+                for key, state in self.strategies.items():
+                    if state.name == t["strategy"]:
+                        strat_key = key
+                        break
+                
+                if strat_key:
+                    state = self.strategies[strat_key]
+                    state.open_trades.append({
+                        "id": t["id"],
+                        "order_id": None,
+                        "direction": t["direction"],
+                        "entry_price": t["entry_price"],
+                        "quantity": t["quantity"],
+                        "cost": t["entry_price"] * t["quantity"],
+                        "market_slug": t["market_id"],
+                        "token_id": None,
+                        "condition_id": sig_data.get("condition_id"),
+                        "window_end_ts": int(t["market_id"].split("-")[-1]) + 300,
+                    })
+                    recovered += 1
+            
+            if recovered or cleaned:
+                self.log(f"🔄 Recovered {recovered} open trades from DB, cleaned {cleaned} stuck trades")
+        except Exception as e:
+            self.log(f"⚠️ Trade recovery error: {e}")
+    
     def _total_open(self):
         return sum(len(s.open_trades) for s in self.strategies.values())
     
@@ -359,6 +429,10 @@ class LiveTrader:
         
         self.initial_balance = balance
         self.log(f"💰 Balance: ${balance:,.2f}")
+        
+        # Recover open trades from DB (prevents stuck trades after restart)
+        self._recover_open_trades()
+        
         # Initialize Kelly fractions on startup
         for s in self.strategies.values():
             self._maybe_recalc_kelly(s)
@@ -431,8 +505,7 @@ class LiveTrader:
         for s in self.strategies.values():
             self._check_open_trades(s, snapshot)
         
-        # Resolve shadow trades
-        self._resolve_shadow_trades(snapshot)
+        # Shadow trades disabled — was polluting DB with non-real entries
         
         # Get market data
         candles = get_recent_candles(minutes=20)
@@ -503,10 +576,9 @@ class LiveTrader:
             # Loss streak cooldown check
             in_cooldown = state.cooldown_skips > 0
 
-            # Shadow trade logging — track capped trades for validation
+            # Shadow trades disabled — log only, no DB write
             if hasattr(sig, 'shadow_trade') and sig.shadow_trade:
-                self.log(f"   👻 {state.display}: SHADOW trade {sig.direction.upper()} @ edge {sig.edge_pct:.1f}% (capped, tracking outcome)")
-                self._record_shadow_trade(state, sig, snapshot)
+                self.log(f"   👻 {state.display}: Edge {sig.edge_pct:.1f}% above cap — skipped")
             
             if sig.should_trade and can_trade and strategy_cap and has_funds and not in_cooldown and not overnight_blocked:
                 self._execute_live_trade(state, sig, snapshot)
