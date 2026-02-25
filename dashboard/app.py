@@ -171,8 +171,20 @@ def load_real_trades(limit=2000):
     df["entry_price"] = df["avg_price"]
     df["quantity"] = df["tokens"]
     df["version"] = df.apply(lambda row: get_strategy_version(row["strategy"], row["timestamp"]), axis=1)
-    df["edge_pct"] = 0.0
-    df["confidence"] = 0.0
+    # Pull edge/confidence from original trades table by matching market_id + strategy
+    try:
+        edge_map = {}
+        conn2 = get_connection()
+        for row in conn2.execute(
+            "SELECT market_id, strategy, edge_pct, confidence FROM trades WHERE strategy LIKE '%_LIVE' AND edge_pct IS NOT NULL"
+        ).fetchall():
+            edge_map[(row[0], row[1])] = (row[2], row[3])
+        conn2.close()
+        df["edge_pct"] = df.apply(lambda r: edge_map.get((r["market_id"], r["strategy"]), (0.0, 0.0))[0], axis=1)
+        df["confidence"] = df.apply(lambda r: edge_map.get((r["market_id"], r["strategy"]), (0.0, 0.0))[1], axis=1)
+    except Exception:
+        df["edge_pct"] = 0.0
+        df["confidence"] = 0.0
     return df
 
 

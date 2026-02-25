@@ -409,6 +409,24 @@ class LiveTrader:
             self.log("⏳ No active market found, waiting...")
             return
         
+        # Auto-cleanup stuck trades (>30 min old on 5-min markets)
+        now_ts = int(time.time())
+        for s in self.strategies.values():
+            before = len(s.open_trades)
+            stuck = [t for t in s.open_trades if now_ts - t.get("window_end_ts", now_ts) > 1800]
+            for t in stuck:
+                try:
+                    conn = sqlite3.connect(DB_PATH)
+                    conn.execute(
+                        "UPDATE trades SET status='closed', exit_reason='stuck_auto', pnl=0, closed_at=datetime('now') WHERE id=?",
+                        (t["id"],))
+                    conn.commit()
+                    conn.close()
+                    s.open_trades.remove(t)
+                    self.log(f"🧹 {s.display}: Auto-cleaned stuck trade #{t['id']} ({(now_ts - t.get('window_end_ts', now_ts))//60}min old)")
+                except Exception as e:
+                    self.log(f"⚠️ Stuck cleanup error: {e}")
+        
         # Check open trades for resolution
         for s in self.strategies.values():
             self._check_open_trades(s, snapshot)
