@@ -325,13 +325,15 @@ st.markdown("""
         color: #475569 !important;
         font-weight: 600 !important;
     }
+    /* Selected value in the box — dark text on white */
     div[data-baseweb="select"] > div { background-color: #ffffff !important; border-color: #e2e8f0 !important; color: #1e293b !important; }
     div[data-baseweb="select"] span { color: #1e293b !important; }
     div[data-baseweb="select"] input { color: #1e293b !important; }
-    div[data-baseweb="popover"] li { color: #1e293b !important; }
-    div[data-baseweb="menu"] { background-color: #ffffff !important; }
-    div[data-baseweb="menu"] li { color: #1e293b !important; }
-    div[data-baseweb="menu"] li:hover { background-color: #f1f5f9 !important; }
+    /* Dropdown menu — white text on dark background */
+    div[data-baseweb="popover"] li { color: #ffffff !important; }
+    div[data-baseweb="menu"] { background-color: #1e293b !important; }
+    div[data-baseweb="menu"] li { color: #ffffff !important; }
+    div[data-baseweb="menu"] li:hover { background-color: #334155 !important; }
     /* Multiselect tags */
     span[data-baseweb="tag"] { background-color: #e2e8f0 !important; color: #1e293b !important; }
     span[data-baseweb="tag"] span { color: #1e293b !important; }
