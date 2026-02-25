@@ -601,15 +601,60 @@ class LiveTrader:
             self.log(f"   ❌ Order failed — skipping")
             return
         
-        # Record in database
+        # Verify order filled (wait up to 5s, check fill status)
+        order_id = order.get("order_id")
+        fill_price = order["price"]
+        fill_size = order["size"]
+        filled = False
+        
+        if order_id:
+            for attempt in range(5):
+                time.sleep(1)
+                try:
+                    order_data = self.client.get_order(order_id)
+                    if order_data:
+                        status = order_data.get("status", "")
+                        size_matched = float(order_data.get("size_matched", 0))
+                        if size_matched > 0:
+                            fill_size = size_matched
+                            fill_price = float(order_data.get("price", fill_price))
+                            filled = True
+                            self.log(f"   ✅ Order filled: {size_matched:.1f} @ ${fill_price:.3f}")
+                            break
+                        elif status in ("CANCELED", "EXPIRED"):
+                            self.log(f"   ⚠️ Order {status} — not filled, skipping")
+                            return
+                except Exception as e:
+                    self.log(f"   ⚠️ Fill check error: {e}")
+            
+            if not filled:
+                # Check one more time
+                try:
+                    order_data = self.client.get_order(order_id)
+                    size_matched = float(order_data.get("size_matched", 0)) if order_data else 0
+                    if size_matched > 0:
+                        fill_size = size_matched
+                        fill_price = float(order_data.get("price", fill_price))
+                        filled = True
+                    else:
+                        self.log(f"   ⚠️ Order not filled after 5s — canceling and skipping")
+                        try:
+                            self.client.cancel_orders([order_id])
+                        except Exception:
+                            pass
+                        return
+                except Exception:
+                    self.log(f"   ⚠️ Could not verify fill — recording with caution")
+        
+        # Record in database (only if filled or fill check unavailable)
         trade_data = {
             "timestamp": int(time.time()),
             "market_id": snapshot["slug"],
             "strategy": state.name,
             "side": "buy",
             "direction": direction,
-            "entry_price": order["price"],
-            "quantity": order["size"],
+            "entry_price": fill_price,
+            "quantity": fill_size,
             "edge_pct": sig.edge_pct,
             "confidence": sig.confidence,
             "signal_data": {**(sig.to_dict() if hasattr(sig, 'to_dict') else {}), "condition_id": snapshot["condition_id"]},
@@ -620,11 +665,11 @@ class LiveTrader:
         
         state.open_trades.append({
             "id": trade_id,
-            "order_id": order["order_id"],
+            "order_id": order_id,
             "direction": direction,
-            "entry_price": order["price"],
-            "quantity": order["size"],
-            "cost": order["price"] * order["size"],
+            "entry_price": fill_price,
+            "quantity": fill_size,
+            "cost": fill_price * fill_size,
             "market_slug": snapshot["slug"],
             "token_id": token_id,
             "condition_id": snapshot["condition_id"],
@@ -632,9 +677,10 @@ class LiveTrader:
         })
         
         emoji = "🟢" if direction == "up" else "🔴"
+        fill_note = " (verified)" if filled else " (unverified)"
         self.log(f"{emoji} 💰 {state.display} LIVE TRADE: BUY {direction.upper()} "
-                f"@ ${order['price']:.3f} | Qty: {order['size']:.1f} | "
-                f"Cost: ${order['price'] * order['size']:.2f} | Edge: {sig.edge_pct:.1f}%")
+                f"@ ${fill_price:.3f} | Qty: {fill_size:.1f} | "
+                f"Cost: ${fill_price * fill_size:.2f} | Edge: {sig.edge_pct:.1f}%{fill_note}")
     
     def _check_open_trades(self, state, current_snapshot):
         """Check open trades for resolution."""
