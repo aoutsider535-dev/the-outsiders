@@ -548,7 +548,7 @@ def render_trade_history(df, limit=50):
 
 
 # ─── TABS ───
-tab_live, tab_paper = st.tabs(["💰 LIVE TRADING", "📝 Paper Trading"])
+tab_live, tab_paper, tab_paper_v2 = st.tabs(["💰 LIVE TRADING", "📝 Paper Trading", "🧪 Paper v2"])
 
 # ════════════════════════════════════════════
 # 💰 LIVE TAB
@@ -772,3 +772,73 @@ with tab_paper:
 
         st.markdown('<div class="section-header">📋 Trade History</div>', unsafe_allow_html=True)
         render_trade_history(paper_closed)
+
+# ════════════════════════════════════════════
+# 🧪 PAPER v2 TAB
+# ════════════════════════════════════════════
+PAPER_V2_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "paper_v2.db")
+PAPER_V2_STARTING = 100.0
+
+with tab_paper_v2:
+    is_v2_running = check_trader_running("paper_trader_v2")
+    now_pst = datetime.now(timezone.utc).astimezone(PST).strftime("%I:%M %p PST")
+
+    st.markdown(f"""
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:24px">
+        <div style="width:12px;height:12px;border-radius:50%;background:{'#22c55e' if is_v2_running else '#ef4444'}"></div>
+        <span style="font-size:1.1rem;font-weight:600">Paper v2 {'Running' if is_v2_running else 'Stopped'}</span>
+        <span style="color:#94a3b8;font-size:0.9rem">{now_pst}</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Load paper v2 trades
+    v2_closed = pd.DataFrame()
+    if os.path.exists(PAPER_V2_DB):
+        try:
+            import sqlite3 as _sq
+            _conn = _sq.connect(PAPER_V2_DB)
+            v2_closed = pd.read_sql_query(
+                "SELECT * FROM trades WHERE status='closed' ORDER BY timestamp", _conn
+            )
+            v2_open_count = pd.read_sql_query(
+                "SELECT COUNT(*) as cnt FROM trades WHERE status='open'", _conn
+            ).iloc[0]["cnt"]
+            _conn.close()
+        except Exception as e:
+            st.warning(f"Paper v2 DB error: {e}")
+            v2_open_count = 0
+
+    if v2_closed.empty:
+        st.info("🧪 Paper Trader v2 just started — waiting for trades to resolve...")
+    else:
+        total_v2 = len(v2_closed)
+        wins_v2 = len(v2_closed[v2_closed["pnl"] > 0])
+        losses_v2 = total_v2 - wins_v2
+        wr_v2 = wins_v2 / total_v2 * 100 if total_v2 > 0 else 0
+        total_pnl_v2 = v2_closed["pnl"].sum()
+        balance_v2 = PAPER_V2_STARTING + total_pnl_v2
+
+        col1, col2, col3, col4, col5 = st.columns(5)
+        for col, label, value, cls in [
+            (col1, "Balance", f"${balance_v2:,.2f}", "positive" if balance_v2 >= PAPER_V2_STARTING else "negative"),
+            (col2, "P&L", f"${total_pnl_v2:+,.2f}", "positive" if total_pnl_v2 >= 0 else "negative"),
+            (col3, "Win Rate", f"{wr_v2:.1f}%", "positive" if wr_v2 >= 55 else "negative" if wr_v2 < 45 else ""),
+            (col4, "Trades", f"{total_v2}", ""),
+            (col5, "Open", f"{v2_open_count}", ""),
+        ]:
+            col.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-label">{label}</div>
+                <div class="metric-value {cls}">{value}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown('<div class="section-header">📈 Paper v2 Equity Curve</div>', unsafe_allow_html=True)
+        render_equity_chart(v2_closed, PAPER_V2_STARTING)
+
+        st.markdown('<div class="section-header">🏆 Strategy Performance</div>', unsafe_allow_html=True)
+        render_strategy_cards(v2_closed)
+
+        st.markdown('<div class="section-header">📋 Trade History</div>', unsafe_allow_html=True)
+        render_trade_history(v2_closed)

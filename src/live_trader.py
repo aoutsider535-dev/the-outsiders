@@ -14,6 +14,7 @@ import time
 import json
 import os
 import signal
+import sqlite3
 import sys
 import requests
 from datetime import datetime, timezone, timedelta
@@ -49,7 +50,7 @@ from src.strategies.smart_money import (
     format_signal_message as smart_format,
     DEFAULT_PARAMS as SMART_DEFAULTS,
 )
-from src.database import init_db, insert_trade, close_trade
+from src.database import init_db, insert_trade, close_trade, DB_PATH
 from src.redeemer import Redeemer
 
 PST = timezone(timedelta(hours=-8))
@@ -78,11 +79,12 @@ STRATEGY_CONFIG = {
         "display": "⚡ Momentum",
         "load_params": load_momentum_params,
     },
-    "mean_reversion": {
-        "name": "btc_5min_meanrev_LIVE",
-        "display": "🔄 Mean Reversion",
-        "load_params": lambda: MEANREV_DEFAULTS.copy(),
-    },
+    # PAUSED — 20% WR on v3 (10 trades), -$74 across v2+v3. Revisit later.
+    # "mean_reversion": {
+    #     "name": "btc_5min_meanrev_LIVE",
+    #     "display": "🔄 Mean Reversion",
+    #     "load_params": lambda: MEANREV_DEFAULTS.copy(),
+    # },
     "orderbook_imbalance": {
         "name": "btc_5min_ob_imbalance_LIVE",
         "display": "📊 OB Imbalance",
@@ -110,6 +112,8 @@ class StrategyState:
         self.total_pnl = 0.0
         self.consecutive_losses = 0
         self.cooldown_skips = 0  # Trades to skip after loss streak
+        self.kelly_fraction = 0.04  # Default 4%, updated by Kelly calc
+        self.kelly_last_calc = 0  # Trade count at last Kelly recalc
 
 
 class LiveTrader:
@@ -195,14 +199,78 @@ class LiveTrader:
             self.log(f"⚠️ Balance check error: {e}")
             return None
     
-    def _calc_trade_size(self, balance=None):
-        """Calculate dynamic trade size: trade_size_pct% of balance, clamped to [min, max]."""
+    def _calc_trade_size(self, balance=None, strategy_key=None):
+        """Calculate dynamic trade size using Half Kelly per strategy, clamped to [min, max].
+        Kelly fraction is recalculated every KELLY_RECALC_INTERVAL trades per strategy."""
         if balance is None:
             balance = self._get_balance()
         if balance is None or balance <= 0:
             return self.trade_size_min
-        size = balance * (self.trade_size_pct / 100)
+        
+        # Use strategy-specific Kelly fraction if available
+        fraction = self.trade_size_pct / 100  # fallback to flat %
+        if strategy_key and strategy_key in self.strategies:
+            state = self.strategies[strategy_key]
+            self._maybe_recalc_kelly(state)
+            fraction = state.kelly_fraction
+        
+        size = balance * fraction
         return max(self.trade_size_min, min(self.trade_size_max, round(size, 2)))
+    
+    # Kelly Criterion constants
+    KELLY_RECALC_INTERVAL = 20  # Recalc every N trades (move to 50 after 100+ trades)
+    KELLY_MIN_TRADES = 15       # Need at least this many trades to calculate
+    KELLY_MIN_FRACTION = 0.01   # 1% floor
+    KELLY_MAX_FRACTION = 0.15   # 15% cap
+    
+    def _maybe_recalc_kelly(self, state):
+        """Recalculate Half Kelly fraction for a strategy if enough new trades."""
+        trades_since = state.trade_count - state.kelly_last_calc
+        if trades_since < self.KELLY_RECALC_INTERVAL and state.kelly_last_calc > 0:
+            return
+        
+        # Query recent closed trades for this strategy
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            rows = conn.execute(
+                "SELECT pnl, quantity FROM trades WHERE strategy = ? AND status = 'closed' AND is_simulated = 0",
+                (state.name,)
+            ).fetchall()
+            conn.close()
+        except Exception as e:
+            self.log(f"⚠️ Kelly calc error: {e}")
+            return
+        
+        if len(rows) < self.KELLY_MIN_TRADES:
+            return  # Not enough data, keep default
+        
+        wins, losses = [], []
+        for pnl, qty in rows:
+            if qty and qty > 0:
+                ret = pnl / qty  # return per dollar
+                if pnl > 0:
+                    wins.append(ret)
+                else:
+                    losses.append(abs(ret))
+        
+        if not wins or not losses:
+            return
+        
+        p = len(wins) / len(rows)  # win rate
+        avg_win = sum(wins) / len(wins)
+        avg_loss = sum(losses) / len(losses)
+        b = avg_win / avg_loss if avg_loss > 0 else 1.0  # win/loss ratio
+        
+        full_kelly = p - (1 - p) / b
+        half_kelly = full_kelly / 2
+        
+        old = state.kelly_fraction
+        state.kelly_fraction = max(self.KELLY_MIN_FRACTION, min(self.KELLY_MAX_FRACTION, half_kelly))
+        state.kelly_last_calc = state.trade_count
+        
+        if abs(old - state.kelly_fraction) > 0.001:
+            self.log(f"📐 {state.display} Kelly update: {old*100:.1f}% → {state.kelly_fraction*100:.1f}% "
+                     f"(WR={p*100:.0f}%, W/L={b:.2f}x, n={len(rows)})")
     
     def _total_open(self):
         return sum(len(s.open_trades) for s in self.strategies.values())
@@ -281,13 +349,16 @@ class LiveTrader:
         
         self.initial_balance = balance
         self.log(f"💰 Balance: ${balance:,.2f}")
-        current_size = self._calc_trade_size(balance)
-        self.log(f"📊 Trade size: {self.trade_size_pct}% of balance = ${current_size:.2f} (min ${self.trade_size_min}, max ${self.trade_size_max})")
-        self.log(f"📡 Strategies:")
+        # Initialize Kelly fractions on startup
+        for s in self.strategies.values():
+            self._maybe_recalc_kelly(s)
+        self.log(f"📡 Strategies (Half Kelly sizing):")
         for s in self.strategies.values():
             p = s.params
+            size = self._calc_trade_size(balance, strategy_key=s.key)
             self.log(f"   {s.display}: TP={p['take_profit_pct']}% | "
-                    f"SL={p['stop_loss_pct']}% | Edge>={p['min_edge_pct']}%")
+                    f"SL={p['stop_loss_pct']}% | Edge>={p['min_edge_pct']}% | "
+                    f"Kelly={s.kelly_fraction*100:.1f}% (${size:.2f})")
         self.log(f"🔒 Max positions: {self.max_per_strategy}/strategy, {self.max_total} total")
         print("=" * 60)
         print("Press Ctrl+C to stop\n")
@@ -383,9 +454,9 @@ class LiveTrader:
             can_trade = total_open < self.max_total
             strategy_cap = len(state.open_trades) < self.max_per_strategy
             
-            # Check balance and calculate dynamic trade size
+            # Check balance and calculate dynamic trade size (Kelly per strategy)
             balance = self._get_balance()
-            self.trade_size = self._calc_trade_size(balance)
+            self.trade_size = self._calc_trade_size(balance, strategy_key=key)
             has_funds = balance is not None and balance >= self.trade_size
             
             # Loss streak cooldown check (Smart Money)

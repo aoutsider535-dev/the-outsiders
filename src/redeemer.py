@@ -224,7 +224,7 @@ class Redeemer:
                 "from": self.eoa_address,
                 "to": Web3.to_checksum_address(FACTORY_ADDRESS),
                 "data": calldata,
-                "nonce": self.w3.eth.get_transaction_count(self.eoa_address),
+                "nonce": self.w3.eth.get_transaction_count(self.eoa_address, "pending"),
                 "gas": 300_000,
                 "gasPrice": max(self.w3.eth.gas_price, 30_000_000_000),  # min 30 Gwei
                 "chainId": 137,
