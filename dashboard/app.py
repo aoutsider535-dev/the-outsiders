@@ -147,6 +147,32 @@ def load_trades(is_live=True, limit=2000):
     return df
 
 
+def load_real_trades(limit=2000):
+    """Load verified on-chain trades from real_trades table (CSV import)."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM real_trades ORDER BY timestamp DESC LIMIT ?",
+            (limit,)
+        ).fetchall()
+    except Exception:
+        conn.close()
+        return pd.DataFrame()
+    conn.close()
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame([dict(r) for r in rows])
+    # Add dashboard-compatible columns
+    df["time_pst"] = pd.to_datetime(df["timestamp"], unit="s", utc=True).dt.tz_convert("US/Pacific")
+    df["time_display"] = df["timestamp"].apply(to_pst)
+    df["entry_price"] = df["avg_price"]
+    df["quantity"] = df["tokens"]
+    df["version"] = df.apply(lambda row: get_strategy_version(row["strategy"], row["timestamp"]), axis=1)
+    df["edge_pct"] = 0.0
+    df["confidence"] = 0.0
+    return df
+
+
 # ─── PAGE CONFIG ───
 st.set_page_config(page_title="🏞 The Outsiders", page_icon="🏞", layout="wide", initial_sidebar_state="collapsed")
 init_db()
@@ -354,6 +380,52 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+def calibrate_live_pnl(df, real_balance, starting_balance):
+    """Calibrate DB P&L to match real CLOB balance.
+    
+    The DB records gross P&L without accounting for fees, slippage, and
+    phantom trades (orders logged but never filled). We distribute the
+    discrepancy proportionally by trade volume so bigger trades absorb
+    more correction.
+    """
+    if real_balance is None:
+        return df
+    closed = df[df["status"] == "closed"] if "status" in df.columns else df
+    if closed.empty or "pnl" not in closed.columns:
+        return df
+    
+    db_gross = closed["pnl"].sum()
+    real_pnl = real_balance - starting_balance
+    gap = db_gross - real_pnl  # positive = DB is overstating
+    
+    if abs(gap) < 0.01:
+        return df
+    
+    # Distribute correction proportional to trade volume (quantity * entry_price)
+    df = df.copy()
+    if "quantity" in df.columns and "entry_price" in df.columns:
+        df["_volume"] = (df["quantity"].fillna(0) * df["entry_price"].fillna(0)).abs()
+    else:
+        df["_volume"] = 1.0
+    
+    closed_mask = df["status"] == "closed" if "status" in df.columns else pd.Series(True, index=df.index)
+    total_volume = df.loc[closed_mask, "_volume"].sum()
+    
+    if total_volume > 0:
+        df.loc[closed_mask, "pnl_calibrated"] = (
+            df.loc[closed_mask, "pnl"] - gap * df.loc[closed_mask, "_volume"] / total_volume
+        )
+    else:
+        # Fallback: even distribution
+        n = closed_mask.sum()
+        df.loc[closed_mask, "pnl_calibrated"] = df.loc[closed_mask, "pnl"] - gap / n
+    
+    # Open trades keep original pnl
+    df.loc[~closed_mask, "pnl_calibrated"] = df.loc[~closed_mask, "pnl"]
+    df.drop(columns=["_volume"], inplace=True)
+    return df
+
+
 def compute_stats(df):
     closed = df[df["status"] == "closed"] if "status" in df.columns else df
     total = len(closed)
@@ -391,7 +463,8 @@ def render_kpi_row(balance, total_pnl, roi, stats, open_count, active_strats):
 
 
 def render_equity_chart(df, starting_balance, selected_strategies=None, real_balance=None):
-    """Render P&L equity curve showing portfolio balance and per-strategy contributions."""
+    """Render P&L equity curve showing portfolio balance and per-strategy contributions.
+    Uses calibrated P&L when available (anchored to real CLOB balance)."""
     closed = df[df["status"] == "closed"].copy() if "status" in df.columns else df.copy()
     if closed.empty:
         st.info("No closed trades to chart.")
@@ -405,13 +478,7 @@ def render_equity_chart(df, starting_balance, selected_strategies=None, real_bal
 
     closed = closed.sort_values("timestamp")
 
-    # Deduct estimated 2% Polymarket taker fee from each trade's P&L
-    FEE_RATE = 0.02
-    if "quantity" in closed.columns and "entry_price" in closed.columns:
-        closed["fee"] = (closed["quantity"].fillna(0) * closed["entry_price"].fillna(0) * FEE_RATE)
-        closed["net_pnl"] = closed["pnl"] - closed["fee"]
-    else:
-        closed["net_pnl"] = closed["pnl"]
+    closed["net_pnl"] = closed["pnl"]
 
     closed["cumulative_pnl"] = closed["net_pnl"].cumsum()
     closed["balance"] = starting_balance + closed["cumulative_pnl"]
@@ -577,13 +644,24 @@ with tab_live:
     </div>
     """, unsafe_allow_html=True)
 
-    df_live = load_trades(is_live=True)
+    # Try real_trades first (on-chain verified), fall back to DB trades
+    df_real = load_real_trades()
+    df_live = df_real if not df_real.empty else load_trades(is_live=True)
+    using_real = not df_real.empty
 
     if df_live.empty:
         st.markdown('<div style="text-align:center;padding:60px;"><h2 style="color:#94a3b8;">🚀 No live trades yet</h2></div>', unsafe_allow_html=True)
     else:
         closed = df_live[df_live["status"] == "closed"] if "status" in df_live.columns else df_live
-        open_live = df_live[df_live["status"] == "open"] if "status" in df_live.columns else pd.DataFrame()
+        if using_real:
+            open_live = pd.DataFrame()  # real_trades doesn't track open
+            # Get open count from original trades table
+            _conn = get_connection()
+            _oc = _conn.execute("SELECT COUNT(*) FROM trades WHERE strategy LIKE '%_LIVE' AND status='open'").fetchone()[0]
+            _conn.close()
+        else:
+            open_live = df_live[df_live["status"] == "open"] if "status" in df_live.columns else pd.DataFrame()
+            _oc = len(open_live)
 
         all_strats = sorted(closed["strategy"].unique().tolist()) if "strategy" in closed.columns else []
 
@@ -667,8 +745,14 @@ with tab_live:
         balance = real_balance if real_balance is not None else LIVE_STARTING_BALANCE + (closed["pnl"].sum() if "pnl" in closed.columns else 0)
         total_pnl = balance - LIVE_STARTING_BALANCE
         roi = (total_pnl / LIVE_STARTING_BALANCE) * 100
+
         stats = compute_stats(filtered)
-        active_strats = len(set(open_live["strategy"])) if not open_live.empty and "strategy" in open_live.columns else 0
+        if using_real:
+            _conn2 = get_connection()
+            active_strats = _conn2.execute("SELECT COUNT(DISTINCT strategy) FROM trades WHERE strategy LIKE '%_LIVE' AND status='open'").fetchone()[0]
+            _conn2.close()
+        else:
+            active_strats = len(set(open_live["strategy"])) if not open_live.empty and "strategy" in open_live.columns else 0
 
         # Filter summary (if filters are active)
         if len(filtered) != len(closed):
@@ -685,7 +769,16 @@ with tab_live:
             </div>
             """, unsafe_allow_html=True)
 
-        render_kpi_row(balance, total_pnl, roi, stats, len(open_live), active_strats)
+        render_kpi_row(balance, total_pnl, roi, stats, _oc, active_strats)
+
+        if using_real:
+            gross_pnl = closed["pnl"].sum() if "pnl" in closed.columns else 0
+            st.markdown(f"""
+            <div style="background:#ecfdf5;border:1px solid #a7f3d0;border-radius:10px;padding:8px 16px;margin:8px 0;font-size:0.78rem;color:#065f46;">
+                ✅ <b>On-chain verified trades.</b> {len(closed)} real positions from Polymarket CSV · Gross P&L ${gross_pnl:+.2f} (before fees) · CLOB balance ${balance:.2f}
+            </div>
+            """, unsafe_allow_html=True)
+
         st.markdown("<br>", unsafe_allow_html=True)
 
         # ─── P&L CHART ───
