@@ -414,8 +414,10 @@ def render_equity_chart(df, starting_balance, selected_strategies=None, real_bal
         # match reality: starts at starting_balance, ends at real_balance
         scale = (real_balance - starting_balance) / (db_final - starting_balance)
         closed["balance"] = starting_balance + closed["cumulative_pnl"] * scale
+        effective_start = starting_balance
     else:
-        closed["balance"] = starting_balance + closed["cumulative_pnl"]
+        effective_start = starting_balance
+        closed["balance"] = effective_start + closed["cumulative_pnl"]
 
     fig = go.Figure()
 
@@ -431,7 +433,7 @@ def render_equity_chart(df, starting_balance, selected_strategies=None, real_bal
     for strat in strats:
         s_df = closed[closed["strategy"] == strat]
         fig.add_trace(go.Scatter(
-            x=s_df["time_pst"], y=effective_start + s_df["pnl"].cumsum(),
+            x=s_df["time_pst"], y=starting_balance + s_df["pnl"].cumsum() * (scale if real_balance is not None and real_balance > 0 and db_final != starting_balance else 1),
             mode="markers+lines", name=strategy_label(strat),
             line=dict(color=strategy_color(strat), width=1.8),
             marker=dict(size=4, color=strategy_color(strat)),
