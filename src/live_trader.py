@@ -689,18 +689,19 @@ class LiveTrader:
             
             close_trade(trade["id"], 1.0 if won else 0.0, pnl, pnl_pct, exit_reason)
             
-            # Auto-claim winnings
-            if won and self.redeemer and trade.get("condition_id"):
+            # Auto-redeem resolved positions (wins get USDC back, losses clear the position)
+            if self.redeemer and trade.get("condition_id"):
                 try:
                     result = self.redeemer.redeem(trade["condition_id"])
                     if result.get("success"):
-                        self.log(f"💰 Auto-claimed! tx: {result['tx_hash'][:16]}...")
+                        label = "💰 Auto-claimed" if won else "🧹 Auto-cleared loss"
+                        self.log(f"{label}! tx: {result['tx_hash'][:16]}...")
                     elif result.get("error") == "rate_limited":
-                        self.log(f"⏸️ Claim rate-limited, will retry later")
+                        self.log(f"⏸️ Redeem rate-limited, will retry later")
                     else:
-                        self.log(f"⚠️ Claim failed: {result.get('error', 'unknown')}")
+                        self.log(f"⚠️ Redeem failed: {result.get('error', 'unknown')}")
                 except Exception as e:
-                    self.log(f"⚠️ Auto-claim error (funds safe, claim manually): {e}")
+                    self.log(f"⚠️ Auto-redeem error (claim manually): {e}")
             
             emoji = "✅" if won else "❌"
             balance = self._get_balance()
