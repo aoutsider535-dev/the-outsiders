@@ -404,7 +404,16 @@ def render_equity_chart(df, starting_balance, selected_strategies=None, real_bal
         return
 
     closed = closed.sort_values("timestamp")
-    closed["cumulative_pnl"] = closed["pnl"].cumsum()
+
+    # Deduct estimated 2% Polymarket taker fee from each trade's P&L
+    FEE_RATE = 0.02
+    if "quantity" in closed.columns and "entry_price" in closed.columns:
+        closed["fee"] = (closed["quantity"].fillna(0) * closed["entry_price"].fillna(0) * FEE_RATE)
+        closed["net_pnl"] = closed["pnl"] - closed["fee"]
+    else:
+        closed["net_pnl"] = closed["pnl"]
+
+    closed["cumulative_pnl"] = closed["net_pnl"].cumsum()
     closed["balance"] = starting_balance + closed["cumulative_pnl"]
 
     fig = go.Figure()
@@ -424,7 +433,7 @@ def render_equity_chart(df, starting_balance, selected_strategies=None, real_bal
     for strat in strats:
         s_df = closed[closed["strategy"] == strat]
         fig.add_trace(go.Scatter(
-            x=s_df["time_pst"], y=starting_balance + s_df["pnl"].cumsum(),
+            x=s_df["time_pst"], y=starting_balance + s_df["net_pnl"].cumsum(),
             mode="markers+lines", name=strategy_label(strat),
             line=dict(color=strategy_color(strat), width=1.8),
             marker=dict(size=4, color=strategy_color(strat)),
