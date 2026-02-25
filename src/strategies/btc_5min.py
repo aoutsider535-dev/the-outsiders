@@ -61,6 +61,7 @@ class Signal:
     avg_volume: float = 0.0
     price_change_pct: float = 0.0
     should_trade: bool = False
+    shadow_trade: bool = False  # Track capped trades for validation
     reason: str = ""
 
     def to_dict(self):
@@ -276,8 +277,9 @@ def generate_signal(candles, orderbook_data=None, market_up_price=0.5,
     max_edge = params.get("max_edge_pct", 12.0)
     
     if signal.edge_pct > max_edge:
-        signal.reason = (f"⚠️ Momentum: Edge {signal.edge_pct:.1f}% > {max_edge}% cap | "
-                        f"Best direction: {signal.direction}")
+        signal.shadow_trade = True  # Track what would have happened
+        signal.reason = (f"👻 Momentum SHADOW: Edge {signal.edge_pct:.1f}% > {max_edge}% cap — tracking only | "
+                        f"Direction: {signal.direction} @ {signal.confidence:.1%}")
     elif signal.edge_pct >= min_edge and signal.confidence >= min_confidence:
         signal.should_trade = True
         signal.reason = (f"Edge {signal.edge_pct:.1f}% >= {min_edge}% threshold | "

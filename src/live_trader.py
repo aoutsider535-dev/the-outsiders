@@ -332,6 +332,9 @@ class LiveTrader:
         for s in self.strategies.values():
             self._check_open_trades(s, snapshot)
         
+        # Resolve shadow trades
+        self._resolve_shadow_trades(snapshot)
+        
         # Get market data
         candles = get_recent_candles(minutes=20)
         ticker = fetch_kraken_ticker()
@@ -388,6 +391,11 @@ class LiveTrader:
             # Loss streak cooldown check (Smart Money)
             in_cooldown = state.cooldown_skips > 0
 
+            # Shadow trade logging — track capped trades for validation
+            if hasattr(sig, 'shadow_trade') and sig.shadow_trade:
+                self.log(f"   👻 {state.display}: SHADOW trade {sig.direction.upper()} @ edge {sig.edge_pct:.1f}% (capped, tracking outcome)")
+                self._record_shadow_trade(state, sig, snapshot)
+            
             if sig.should_trade and can_trade and strategy_cap and has_funds and not in_cooldown:
                 self._execute_live_trade(state, sig, snapshot)
             elif sig.should_trade and in_cooldown:
@@ -430,6 +438,71 @@ class LiveTrader:
                 "orderbook_imbalance": ob_format, "smart_money": smart_format}
         return fmts.get(key, str)(sig)
     
+    def _record_shadow_trade(self, state, sig, snapshot):
+        """Record a shadow trade to DB for tracking capped-trade outcomes."""
+        try:
+            conn = get_connection()
+            direction = sig.direction
+            entry_price = snapshot[f"{direction}_price"]
+            signal_data = sig.to_dict() if hasattr(sig, 'to_dict') else {}
+            signal_data["condition_id"] = snapshot.get("condition_id", "")
+            signal_data["shadow"] = True
+            conn.execute(
+                """INSERT INTO trades (timestamp, market_id, strategy, side, direction,
+                   entry_price, quantity, edge_pct, confidence, signal_data, status, 
+                   is_simulated, exit_reason)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', 0, 'shadow')""",
+                (int(snapshot["timestamp"]), snapshot["slug"],
+                 state.strategy_name + "_SHADOW", "buy", direction,
+                 entry_price, 0, sig.edge_pct, sig.confidence,
+                 json.dumps(signal_data))
+            )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            self.log(f"   ⚠️ Shadow trade recording failed: {e}")
+
+    def _resolve_shadow_trades(self, current_snapshot):
+        """Resolve shadow trades from DB to track what capped trades would have done."""
+        try:
+            conn = get_connection()
+            shadows = conn.execute(
+                "SELECT id, market_id, direction, entry_price FROM trades WHERE status='open' AND strategy LIKE '%_SHADOW'"
+            ).fetchall()
+            
+            for trade_id, slug, direction, entry_price in shadows:
+                if slug == current_snapshot.get("slug"):
+                    continue  # Still active market
+                
+                resolution = check_market_resolution(slug)
+                if resolution is None or not resolution.get("resolved"):
+                    continue
+                
+                actual_winner = resolution.get("winner")
+                if actual_winner is None:
+                    conn.execute("UPDATE trades SET status='closed', exit_reason='shadow_unknown' WHERE id=?", (trade_id,))
+                    continue
+                
+                won = (direction == actual_winner)
+                if won:
+                    pnl = 1.0 - entry_price  # Normalized per-share
+                    reason = "shadow_win"
+                else:
+                    pnl = -entry_price
+                    reason = "shadow_loss"
+                
+                conn.execute(
+                    "UPDATE trades SET status='closed', exit_price=?, pnl=?, pnl_pct=?, exit_reason=?, closed_at=? WHERE id=?",
+                    (1.0 if won else 0.0, pnl, (pnl / entry_price) * 100, reason, int(datetime.now().timestamp()), trade_id)
+                )
+                emoji = "✅" if won else "❌"
+                self.log(f"👻 SHADOW resolved: {direction.upper()} @ {entry_price:.3f} → {emoji} {'WON' if won else 'LOST'} (would have been ${pnl:+.2f})")
+            
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            self.log(f"⚠️ Shadow resolution error: {e}")
+
     def _execute_live_trade(self, state, sig, snapshot):
         """Execute a REAL trade on Polymarket."""
         direction = sig.direction
