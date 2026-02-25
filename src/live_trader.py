@@ -706,6 +706,17 @@ class LiveTrader:
             balance = self._get_balance()
             bal_str = f"${balance:,.2f}" if balance else "?"
             
+            # Record real balance for equity curve
+            if balance is not None:
+                try:
+                    conn = sqlite3.connect(DB_PATH)
+                    conn.execute("CREATE TABLE IF NOT EXISTS balance_history (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp INTEGER, balance REAL, source TEXT DEFAULT 'live')")
+                    conn.execute("INSERT INTO balance_history (timestamp, balance) VALUES (?, ?)", (int(time.time()), balance))
+                    conn.commit()
+                    conn.close()
+                except Exception:
+                    pass
+            
             self.log(f"{emoji} 💰 {state.display}: Bet {trade['direction'].upper()}, "
                     f"resolved {actual_winner.upper()} | "
                     f"{'WON' if won else 'LOST'} | "

@@ -405,18 +405,29 @@ def render_equity_chart(df, starting_balance, selected_strategies=None, real_bal
 
     closed = closed.sort_values("timestamp")
 
-    # Build equity curve
+    # Build equity curve — use real balance history if available
     closed["cumulative_pnl"] = closed["pnl"].cumsum()
-    db_final = starting_balance + closed["cumulative_pnl"].iloc[-1] if len(closed) else starting_balance
+    effective_start = starting_balance
+    use_real_history = False
 
-    if real_balance is not None and real_balance > 0 and db_final != starting_balance:
-        # Scale the curve so it preserves the shape (peaks/valleys) but endpoints
-        # match reality: starts at starting_balance, ends at real_balance
-        scale = (real_balance - starting_balance) / (db_final - starting_balance)
-        closed["balance"] = starting_balance + closed["cumulative_pnl"] * scale
-        effective_start = starting_balance
-    else:
-        effective_start = starting_balance
+    try:
+        from src.database import DB_PATH as _main_db
+        import sqlite3 as _sq3
+        _bconn = _sq3.connect(_main_db)
+        bh = pd.read_sql_query("SELECT timestamp, balance FROM balance_history ORDER BY timestamp", _bconn)
+        _bconn.close()
+        if not bh.empty and len(bh) >= 5:
+            # Merge real balance onto trades by nearest timestamp
+            closed = closed.sort_values("timestamp")
+            closed["real_balance"] = closed["timestamp"].apply(
+                lambda t: bh.iloc[(bh["timestamp"] - t).abs().argsort().iloc[0]]["balance"]
+            )
+            closed["balance"] = closed["real_balance"]
+            use_real_history = True
+    except Exception:
+        pass
+
+    if not use_real_history:
         closed["balance"] = effective_start + closed["cumulative_pnl"]
 
     fig = go.Figure()
@@ -433,7 +444,7 @@ def render_equity_chart(df, starting_balance, selected_strategies=None, real_bal
     for strat in strats:
         s_df = closed[closed["strategy"] == strat]
         fig.add_trace(go.Scatter(
-            x=s_df["time_pst"], y=starting_balance + s_df["pnl"].cumsum() * (scale if real_balance is not None and real_balance > 0 and db_final != starting_balance else 1),
+            x=s_df["time_pst"], y=starting_balance + s_df["pnl"].cumsum(),
             mode="markers+lines", name=strategy_label(strat),
             line=dict(color=strategy_color(strat), width=1.8),
             marker=dict(size=4, color=strategy_color(strat)),
