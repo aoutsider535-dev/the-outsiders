@@ -394,9 +394,11 @@ class LiveTrader:
             tick_size = str(clob_market.get("minimum_tick_size", "0.01"))
             neg_risk = clob_market.get("neg_risk", False)
             
-            # Round price to tick size
+            # Round price to tick size, add 1 tick to cross spread and fill as taker
             tick = float(tick_size)
-            rounded_price = round(round(price / tick) * tick, 2)
+            aggressive_price = price + tick  # Pay 1 tick more to ensure fill
+            rounded_price = round(round(aggressive_price / tick) * tick, 2)
+            rounded_price = min(rounded_price, 0.99)  # Safety cap
             
             order_args = OrderArgs(
                 token_id=token_id,
@@ -961,8 +963,8 @@ class LiveTrader:
         filled = False
         
         if order_id:
-            for attempt in range(5):
-                time.sleep(1)
+            for attempt in range(8):
+                time.sleep(1.5)
                 try:
                     order_data = self.client.get_order(order_id)
                     if order_data:
@@ -991,7 +993,7 @@ class LiveTrader:
                         fill_price = float(order_data.get("price", fill_price))
                         filled = True
                     else:
-                        self.log(f"   ⚠️ Order not filled after 7s — canceling and skipping")
+                        self.log(f"   ⚠️ Order not filled after 15s — canceling and skipping")
                         try:
                             self.client.cancel_orders([order_id])
                         except Exception:
