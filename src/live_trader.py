@@ -610,10 +610,10 @@ class LiveTrader:
             self.daily_date = today
             self.circuit_breaker_tripped = False
         
-        # Circuit breaker check
-        if self.circuit_breaker_tripped:
-            self.log(f"🛑 Circuit breaker ACTIVE — daily loss ${self.daily_pnl:+.2f}. No new trades until tomorrow.")
-            return
+        # Circuit breaker check (DISABLED — letting ML learn)
+        # if self.circuit_breaker_tripped:
+        #     self.log(f"🛑 Circuit breaker ACTIVE — daily loss ${self.daily_pnl:+.2f}. No new trades until tomorrow.")
+        #     return
         
         # Run each strategy
         for key, state in self.strategies.items():

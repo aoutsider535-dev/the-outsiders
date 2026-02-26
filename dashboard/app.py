@@ -643,7 +643,7 @@ def render_trade_history(df, limit=50):
 
 
 # ─── TABS ───
-tab_live, tab_paper, tab_paper_v2, tab_paper_v31 = st.tabs(["💰 LIVE TRADING", "📝 Paper Trading", "🧪 Paper v2", "🚀 Paper v3.1 (HTF)"])
+tab_live, tab_paper, tab_paper_v2, tab_paper_v31, tab_ml = st.tabs(["💰 LIVE TRADING", "📝 Paper Trading", "🧪 Paper v2", "🚀 Paper v3.1 (HTF)", "🧠 ML Brain"])
 
 # ════════════════════════════════════════════
 # 💰 LIVE TAB
@@ -1065,3 +1065,148 @@ with tab_paper_v31:
 
         st.markdown('<div class="section-header">📋 Trade History</div>', unsafe_allow_html=True)
         render_trade_history(v31_closed)
+
+# ─── ML BRAIN TAB ───
+with tab_ml:
+    st.markdown('<div class="section-header">🧠 ML Meta-Learner Dashboard</div>', unsafe_allow_html=True)
+    
+    _ml_conn = get_connection()
+    
+    # ─── Model Status ───
+    try:
+        model_log = pd.read_sql("SELECT * FROM ml_model_log ORDER BY id DESC LIMIT 10", _ml_conn)
+    except Exception:
+        model_log = pd.DataFrame()
+    
+    try:
+        ml_features_df = pd.read_sql("SELECT * FROM ml_features WHERE outcome IS NOT NULL ORDER BY id DESC", _ml_conn)
+    except Exception:
+        ml_features_df = pd.DataFrame()
+    
+    try:
+        shadow_df = pd.read_sql("SELECT * FROM ml_shadow_trades ORDER BY id DESC", _ml_conn)
+    except Exception:
+        shadow_df = pd.DataFrame()
+    
+    _ml_conn.close()
+    
+    # ─── Status Cards ───
+    if not ml_features_df.empty:
+        taken = ml_features_df[ml_features_df["decision"] == "take"]
+        skipped = ml_features_df[ml_features_df["decision"] == "skip"]
+        taken_wr = taken["outcome"].mean() * 100 if len(taken) > 0 else 0
+        skipped_wr = skipped["outcome"].mean() * 100 if len(skipped) > 0 else 0
+        total_samples = len(ml_features_df)
+        model_ver = model_log.iloc[0]["version"] if not model_log.empty else 0
+        model_acc = model_log.iloc[0]["accuracy"] * 100 if not model_log.empty else 0
+        
+        col1, col2, col3, col4, col5 = st.columns(5)
+        for col, label, value, cls in [
+            (col1, "Model Version", f"v{model_ver}", ""),
+            (col2, "Training Samples", f"{total_samples}", ""),
+            (col3, "Taken WR", f"{taken_wr:.1f}%", "positive" if taken_wr >= 55 else "negative"),
+            (col4, "Skipped WR", f"{skipped_wr:.1f}%", "negative" if skipped_wr >= 50 else "positive"),
+            (col5, "Model Accuracy", f"{model_acc:.1f}%", "positive" if model_acc >= 55 else ""),
+        ]:
+            col.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-label">{label}</div>
+                <div class="metric-value {cls}">{value}</div>
+            </div>
+            """, unsafe_allow_html=True)
+    else:
+        st.info("🧠 ML Meta-Learner is collecting data. No resolved predictions yet.")
+    
+    # ─── Feature Importance ───
+    if not model_log.empty:
+        st.markdown('<div class="section-header">🎯 Top Feature Importance</div>', unsafe_allow_html=True)
+        import json as _json
+        try:
+            imp = _json.loads(model_log.iloc[0]["feature_importance"])
+            imp_df = pd.DataFrame([{"Feature": k, "Importance": v} for k, v in sorted(imp.items(), key=lambda x: x[1], reverse=True)])
+            
+            fig_imp = go.Figure(go.Bar(
+                x=imp_df["Importance"],
+                y=imp_df["Feature"],
+                orientation="h",
+                marker_color="#6366f1",
+            ))
+            fig_imp.update_layout(
+                height=400, yaxis=dict(autorange="reversed"),
+                margin=dict(l=10, r=10, t=10, b=10),
+                paper_bgcolor="white", plot_bgcolor="white",
+            )
+            st.plotly_chart(fig_imp, use_container_width=True)
+        except Exception:
+            pass
+    
+    # ─── ML Decisions Over Time ───
+    if not ml_features_df.empty and len(ml_features_df) > 5:
+        st.markdown('<div class="section-header">📊 ML Decisions Over Time</div>', unsafe_allow_html=True)
+        
+        # Rolling win rate for taken vs skipped
+        recent = ml_features_df.sort_values("id").tail(100)
+        taken_recent = recent[recent["decision"] == "take"]
+        
+        if len(taken_recent) >= 5:
+            taken_recent = taken_recent.copy()
+            taken_recent["rolling_wr"] = taken_recent["outcome"].rolling(10, min_periods=5).mean() * 100
+            taken_recent["trade_num"] = range(len(taken_recent))
+            
+            fig_wr = go.Figure()
+            fig_wr.add_trace(go.Scatter(
+                x=taken_recent["trade_num"], y=taken_recent["rolling_wr"],
+                mode="lines+markers", name="ML Approved (Rolling 10 WR)",
+                line=dict(color="#22c55e", width=2),
+            ))
+            fig_wr.add_hline(y=55, line_dash="dash", line_color="#ef4444", annotation_text="55% threshold")
+            fig_wr.add_hline(y=50, line_dash="dot", line_color="#94a3b8", annotation_text="Breakeven")
+            fig_wr.update_layout(
+                height=300, yaxis_title="Win Rate %",
+                margin=dict(l=10, r=10, t=10, b=10),
+                paper_bgcolor="white", plot_bgcolor="white",
+            )
+            st.plotly_chart(fig_wr, use_container_width=True)
+    
+    # ─── Shadow Trades (ML Skipped) ───
+    if not shadow_df.empty:
+        st.markdown('<div class="section-header">👻 Shadow Trades (ML Skipped)</div>', unsafe_allow_html=True)
+        
+        resolved_shadows = shadow_df[shadow_df["outcome"].notna()]
+        pending_shadows = shadow_df[shadow_df["outcome"].isna()]
+        
+        col1, col2, col3 = st.columns(3)
+        if len(resolved_shadows) > 0:
+            shadow_wr = resolved_shadows["outcome"].mean() * 100
+            col1.metric("Shadow WR (would have won)", f"{shadow_wr:.1f}%")
+            col2.metric("Resolved", f"{len(resolved_shadows)}")
+            col3.metric("Pending", f"{len(pending_shadows)}")
+            
+            if shadow_wr < 50:
+                st.success(f"✅ ML is working! Skipped trades only win {shadow_wr:.0f}% — good filtering.")
+            else:
+                st.warning(f"⚠️ Skipped trades winning {shadow_wr:.0f}% — model may be too aggressive.")
+        else:
+            col1.metric("Pending Shadows", f"{len(pending_shadows)}")
+            col2.metric("Resolved", "0")
+            st.info("Shadow trades haven't resolved yet. Check back soon.")
+    
+    # ─── Model History ───
+    if not model_log.empty and len(model_log) > 1:
+        st.markdown('<div class="section-header">📈 Model Training History</div>', unsafe_allow_html=True)
+        st.dataframe(model_log[["version", "training_samples", "accuracy", "win_rate_taken", "win_rate_skipped", "created_at"]].round(3), use_container_width=True)
+    
+    # ─── Recent ML Predictions ───
+    if not ml_features_df.empty:
+        st.markdown('<div class="section-header">📋 Recent Predictions</div>', unsafe_allow_html=True)
+        display_cols = ["strategy", "decision", "prediction", "outcome", "pnl", "created_at"]
+        available_cols = [c for c in display_cols if c in ml_features_df.columns]
+        recent_preds = ml_features_df[available_cols].head(30)
+        recent_preds = recent_preds.copy()
+        if "outcome" in recent_preds.columns:
+            recent_preds["outcome"] = recent_preds["outcome"].map({1: "✅ Win", 0: "❌ Loss", None: "⏳"})
+        if "decision" in recent_preds.columns:
+            recent_preds["decision"] = recent_preds["decision"].map({"take": "✅ Take", "skip": "🚫 Skip"}).fillna(recent_preds["decision"])
+        if "prediction" in recent_preds.columns:
+            recent_preds["prediction"] = recent_preds["prediction"].apply(lambda x: f"{x:.1%}" if pd.notna(x) else "—")
+        st.dataframe(recent_preds, use_container_width=True)
