@@ -148,6 +148,14 @@ class LiveTrader:
         self.initial_balance = 0.0
         self.ml = MetaLearner(DB_PATH)
         
+        # Daily loss circuit breaker
+        self.daily_loss_limit_pct = 15.0   # Stop trading if daily loss exceeds 15% of starting balance
+        self.daily_loss_limit_abs = 25.0   # Or $25 absolute, whichever is hit first
+        self.daily_pnl = 0.0
+        self.daily_start_balance = 0.0
+        self.daily_date = None
+        self.circuit_breaker_tripped = False
+        
         for key, config in STRATEGY_CONFIG.items():
             self.strategies[key] = StrategyState(key, config)
         
@@ -445,6 +453,8 @@ class LiveTrader:
             return
         
         self.initial_balance = balance
+        self.daily_start_balance = balance
+        self.daily_date = datetime.now(PST).date()
         self.log(f"💰 Balance: ${balance:,.2f}")
         
         # Recover open trades from DB (prevents stuck trades after restart)
@@ -540,7 +550,8 @@ class LiveTrader:
         for s in self.strategies.values():
             self._check_open_trades(s, snapshot)
         
-        # Shadow trades disabled — was polluting DB with non-real entries
+        # Resolve ML shadow trades (skipped by ML — track what would have happened)
+        self._resolve_ml_shadows()
         
         # Get market data
         candles = get_recent_candles(minutes=35)  # Trend Rider needs 23+ candles (EMA21 + 2)
@@ -589,6 +600,20 @@ class LiveTrader:
         total_open = self._total_open()
         if total_open > 0:
             self.log(f"   📍 Total open: {total_open}")
+        
+        # Daily reset check
+        today = datetime.now(PST).date()
+        if today != self.daily_date:
+            self.log(f"📅 New day — resetting daily P&L (yesterday: ${self.daily_pnl:+.2f})")
+            self.daily_pnl = 0.0
+            self.daily_start_balance = self._get_balance() or self.daily_start_balance
+            self.daily_date = today
+            self.circuit_breaker_tripped = False
+        
+        # Circuit breaker check
+        if self.circuit_breaker_tripped:
+            self.log(f"🛑 Circuit breaker ACTIVE — daily loss ${self.daily_pnl:+.2f}. No new trades until tomorrow.")
+            return
         
         # Run each strategy
         for key, state in self.strategies.items():
@@ -656,6 +681,21 @@ class LiveTrader:
                 self._execute_live_trade(state, sig, snapshot)
             elif sig.should_trade and not ml_approved:
                 self.log(f"   🧠 {state.display}: ML blocked — {ml_reason}")
+                # Shadow track: record what WOULD have happened
+                try:
+                    conn = sqlite3.connect(DB_PATH)
+                    conn.execute("""
+                        INSERT INTO ml_shadow_trades 
+                        (strategy, direction, entry_price, market_slug, ml_prob, features, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, (key, sig.direction, 
+                          snapshot["up_price"] if sig.direction == "up" else snapshot["down_price"],
+                          snapshot["slug"], ml_prob, json.dumps(ml_features) if ml_features else "{}",
+                          datetime.now(timezone.utc).isoformat()))
+                    conn.commit()
+                    conn.close()
+                except Exception:
+                    pass
             elif sig.should_trade and overnight_blocked:
                 self.log(f"   🌙 {state.display}: Overnight gate — skipping (12AM-6AM PST)")
             elif sig.should_trade and in_cooldown:
@@ -937,6 +977,34 @@ class LiveTrader:
                 f"@ ${fill_price:.3f} | Qty: {fill_size:.1f} | "
                 f"Cost: ${fill_price * fill_size:.2f} | Edge: {sig.edge_pct:.1f}%{fill_note}")
     
+    def _resolve_ml_shadows(self):
+        """Resolve ML shadow trades to validate the model's skip decisions."""
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            pending = conn.execute(
+                "SELECT id, direction, market_slug FROM ml_shadow_trades WHERE outcome IS NULL"
+            ).fetchall()
+            
+            for row in pending:
+                shadow_id, direction, slug = row
+                resolution = check_market_resolution(slug)
+                if resolution and resolution.get("resolved") and resolution.get("winner"):
+                    won = 1 if direction == resolution["winner"] else 0
+                    conn.execute(
+                        "UPDATE ml_shadow_trades SET outcome=?, resolved_at=? WHERE id=?",
+                        (won, datetime.now(timezone.utc).isoformat(), shadow_id)
+                    )
+                    emoji = "✅" if won else "❌"
+                    self.log(f"   👻 ML shadow: {direction.upper()} → {emoji} {'would have WON' if won else 'would have LOST'} (ML skipped, P={0:.0%})")
+                    
+                    # Also feed to ML for learning (as a skip outcome)
+                    self.ml.record_outcome(shadow_id * -1, bool(won), 0)  # Negative ID to distinguish
+            
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+    
     def _check_open_trades(self, state, current_snapshot):
         """Check open trades for resolution."""
         if not state.open_trades:
@@ -991,6 +1059,13 @@ class LiveTrader:
             
             state.total_pnl += pnl
             state.trade_count += 1
+            self.daily_pnl += pnl
+            
+            # Check circuit breaker
+            loss_pct = abs(self.daily_pnl) / self.daily_start_balance * 100 if self.daily_start_balance > 0 else 0
+            if self.daily_pnl < 0 and (loss_pct >= self.daily_loss_limit_pct or abs(self.daily_pnl) >= self.daily_loss_limit_abs):
+                self.circuit_breaker_tripped = True
+                self.log(f"🚨🛑 CIRCUIT BREAKER TRIPPED! Daily loss: ${self.daily_pnl:+.2f} ({loss_pct:.1f}%). No more trades today.")
             
             close_trade(trade["id"], 1.0 if won else 0.0, pnl, pnl_pct, exit_reason)
             
