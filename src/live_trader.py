@@ -521,7 +521,7 @@ class LiveTrader:
         # Shadow trades disabled — was polluting DB with non-real entries
         
         # Get market data
-        candles = get_recent_candles(minutes=20)
+        candles = get_recent_candles(minutes=35)  # Trend Rider needs 23+ candles (EMA21 + 2)
         ticker = fetch_kraken_ticker()
         kraken_book = fetch_kraken_orderbook()
         
