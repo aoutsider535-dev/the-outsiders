@@ -58,7 +58,7 @@ from src.strategies.smart_money import (
 )
 from src.database import init_db, insert_trade, close_trade, DB_PATH, get_connection
 from src.data.binance import get_derivatives_signals
-from src.ml.features import extract_features
+from src.ml.features import extract_features, add_cross_strategy_features
 from src.ml.meta_learner import MetaLearner
 from src.redeemer import Redeemer
 
@@ -615,7 +615,17 @@ class LiveTrader:
         #     self.log(f"🛑 Circuit breaker ACTIVE — daily loss ${self.daily_pnl:+.2f}. No new trades until tomorrow.")
         #     return
         
-        # Run each strategy
+        # ═══════════════════════════════════════════════════════════
+        # PHASE 1: Generate ALL signals and collect candidates
+        # ═══════════════════════════════════════════════════════════
+        try:
+            _htf_ctx = get_htf_context()
+        except Exception:
+            _htf_ctx = None
+        
+        all_signals = []  # Collect all signals for cross-strategy context
+        candidates = []   # Tradeable candidates for ML ranking
+        
         for key, state in self.strategies.items():
             if snapshot["slug"] in state.traded_slugs:
                 continue
@@ -629,88 +639,143 @@ class LiveTrader:
             fmt = self._format_signal(key, sig)
             self.log(f"   {state.display}: {fmt}")
             
+            # Record signal for cross-strategy context (even non-trading ones)
+            all_signals.append({
+                "strategy_key": key,
+                "direction": sig.direction if sig.direction else "",
+                "confidence": sig.confidence if hasattr(sig, 'confidence') else 0,
+                "edge_pct": sig.edge_pct if hasattr(sig, 'edge_pct') else 0,
+                "should_trade": sig.should_trade,
+            })
+            
+            if not sig.should_trade:
+                state.traded_slugs.add(snapshot["slug"])
+                continue
+            
+            # Check basic eligibility
             can_trade = total_open < self.max_total
             strategy_cap = len(state.open_trades) < self.max_per_strategy
-            
-            # Check balance and calculate dynamic trade size (Kelly per strategy)
             balance = self._get_balance()
             self.trade_size = self._calc_trade_size(balance, strategy_key=key)
             has_funds = balance is not None and balance >= self.trade_size
-            
-            # Overnight gate: DISABLED per user request (was 12AM-6AM PST)
-            overnight_blocked = False
-            
-            # Loss streak cooldown check
             in_cooldown = state.cooldown_skips > 0
-
-            # Shadow trades disabled — log only, no DB write
+            
             if hasattr(sig, 'shadow_trade') and sig.shadow_trade:
                 self.log(f"   👻 {state.display}: Edge {sig.edge_pct:.1f}% above cap — skipped")
+                state.traded_slugs.add(snapshot["slug"])
+                continue
             
-            # ML Meta-Learner gate
-            ml_approved = True
-            ml_reason = ""
-            if sig.should_trade and can_trade and strategy_cap and has_funds and not in_cooldown:
-                try:
-                    # Fetch HTF context for ML (cached, cheap call)
-                    try:
-                        _htf_ctx = get_htf_context()
-                    except Exception:
-                        _htf_ctx = None
-                    
-                    ml_features = extract_features(
-                        candles, sig, key, state,
-                        market_snapshot={
-                            "up_price": snapshot["up_price"],
-                            "down_price": snapshot["down_price"],
-                            "up_orderbook": up_ob,
-                            "down_orderbook": down_ob,
-                        },
-                        htf_context=_htf_ctx,
-                        derivatives=derivatives,
-                        orderbook=orderbook_data,
-                    )
-                    _entry = snapshot["up_price"] if sig.direction == "up" else snapshot["down_price"]
-                    ml_approved, ml_prob, ml_reason = self.ml.should_trade(
-                        ml_features, key, entry_price=_entry, trade_size=self.trade_size
-                    )
-                    if ml_reason:
-                        self.log(f"   {ml_reason}")
-                except Exception as e:
-                    self.log(f"   ⚠️ ML error (defaulting to trade): {e}")
-                    ml_approved = True
+            if not can_trade:
+                self.log(f"   ⚠️ {state.display}: Signal but at max positions ({self.max_total})")
+                state.traded_slugs.add(snapshot["slug"])
+                continue
+            if not strategy_cap:
+                self.log(f"   ⚠️ {state.display}: Signal but strategy cap ({self.max_per_strategy})")
+                state.traded_slugs.add(snapshot["slug"])
+                continue
+            if not has_funds:
+                self.log(f"   ⚠️ {state.display}: Signal but insufficient funds (${balance:.2f})")
+                state.traded_slugs.add(snapshot["slug"])
+                continue
+            if in_cooldown:
+                state.cooldown_skips -= 1
+                self.log(f"   🛑 {state.display}: Skipping (cooldown, {state.cooldown_skips} skips left)")
+                state.traded_slugs.add(snapshot["slug"])
+                continue
             
-            if sig.should_trade and can_trade and strategy_cap and has_funds and not in_cooldown and ml_approved:
-                self._execute_live_trade(state, sig, snapshot)
-            elif sig.should_trade and not ml_approved:
-                self.log(f"   🧠 {state.display}: ML blocked — {ml_reason}")
-                # Shadow track: record what WOULD have happened
+            # Extract ML features
+            _entry = snapshot["up_price"] if sig.direction == "up" else snapshot["down_price"]
+            try:
+                ml_features = extract_features(
+                    candles, sig, key, state,
+                    market_snapshot={
+                        "up_price": snapshot["up_price"],
+                        "down_price": snapshot["down_price"],
+                        "up_orderbook": up_ob,
+                        "down_orderbook": down_ob,
+                    },
+                    htf_context=_htf_ctx,
+                    derivatives=derivatives,
+                    orderbook=orderbook_data,
+                )
+            except Exception as e:
+                self.log(f"   ⚠️ ML feature extraction error: {e}")
+                ml_features = None
+            
+            candidates.append({
+                "key": key,
+                "state": state,
+                "sig": sig,
+                "entry_price": _entry,
+                "trade_size": self.trade_size,
+                "features": ml_features,
+                "snapshot": snapshot,
+            })
+        
+        # ═══════════════════════════════════════════════════════════
+        # PHASE 2: Add cross-strategy context and let ML rank
+        # ═══════════════════════════════════════════════════════════
+        if not candidates:
+            for key, state in self.strategies.items():
+                state.traded_slugs.add(snapshot["slug"])
+            return
+        
+        # Enrich features with cross-strategy signals
+        for c in candidates:
+            if c["features"]:
+                add_cross_strategy_features(c["features"], all_signals)
+        
+        # ML ranking: evaluate all candidates, sort by expected value
+        ranked = []
+        for c in candidates:
+            try:
+                ml_approved, ml_prob, ml_reason = self.ml.should_trade(
+                    c["features"], c["key"], 
+                    entry_price=c["entry_price"], trade_size=c["trade_size"]
+                )
+                ranked.append({**c, "ml_approved": ml_approved, "ml_prob": ml_prob, "ml_reason": ml_reason})
+            except Exception as e:
+                self.log(f"   ⚠️ ML error for {c['state'].display}: {e}")
+                ranked.append({**c, "ml_approved": True, "ml_prob": 0.5, "ml_reason": f"ML error: {e}"})
+        
+        # Sort by ML probability (best first) — highest EV trades execute first
+        ranked.sort(key=lambda x: x["ml_prob"], reverse=True)
+        
+        # Log the ranking
+        if len(ranked) > 1:
+            rank_str = " > ".join(
+                f"{r['state'].display}({r['ml_prob']:.0%})" for r in ranked
+            )
+            self.log(f"   🏆 ML Ranking: {rank_str}")
+        
+        # ═══════════════════════════════════════════════════════════
+        # PHASE 3: Execute best trades, shadow track the rest
+        # ═══════════════════════════════════════════════════════════
+        for r in ranked:
+            state = r["state"]
+            sig = r["sig"]
+            
+            if r["ml_approved"]:
+                self.log(f"   {r['ml_reason']}")
+                self._execute_live_trade(state, sig, r["snapshot"])
+            else:
+                self.log(f"   {r['ml_reason']}")
+                self.log(f"   🧠 {state.display}: ML blocked")
+                # Shadow track
                 try:
                     conn = sqlite3.connect(DB_PATH)
                     conn.execute("""
                         INSERT INTO ml_shadow_trades 
                         (strategy, direction, entry_price, market_slug, ml_prob, features, created_at)
                         VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """, (key, sig.direction, 
-                          snapshot["up_price"] if sig.direction == "up" else snapshot["down_price"],
-                          snapshot["slug"], ml_prob, json.dumps(ml_features) if ml_features else "{}",
+                    """, (r["key"], sig.direction, r["entry_price"],
+                          snapshot["slug"], r["ml_prob"],
+                          json.dumps(r["features"]) if r["features"] else "{}",
                           datetime.now(timezone.utc).isoformat()))
                     conn.commit()
                     conn.close()
                 except Exception:
                     pass
-            elif sig.should_trade and overnight_blocked:
-                self.log(f"   🌙 {state.display}: Overnight gate — skipping (12AM-6AM PST)")
-            elif sig.should_trade and in_cooldown:
-                state.cooldown_skips -= 1
-                self.log(f"   🛑 {state.display}: Skipping (cooldown, {state.cooldown_skips} skips left)")
-                total_open += 1
-            elif sig.should_trade and not has_funds:
-                self.log(f"   ⚠️ {state.display}: Signal but insufficient funds (${balance:.2f})")
-            elif sig.should_trade and not can_trade:
-                self.log(f"   ⚠️ {state.display}: Signal but at max positions ({self.max_total})")
-            elif sig.should_trade and not strategy_cap:
-                self.log(f"   ⚠️ {state.display}: Signal but strategy cap ({self.max_per_strategy})")
             
             state.traded_slugs.add(snapshot["slug"])
     

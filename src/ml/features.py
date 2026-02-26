@@ -184,6 +184,48 @@ def extract_features(candles, signal, strategy_key, strategy_state, market_snaps
     return features
 
 
+def add_cross_strategy_features(features, all_signals):
+    """
+    Enrich feature dict with cross-strategy context.
+    
+    Args:
+        features: existing feature dict for one strategy
+        all_signals: list of dicts with {strategy_key, direction, confidence, edge_pct, should_trade}
+    """
+    if not all_signals:
+        features["n_strategies_firing"] = 0.0
+        features["strategy_agreement"] = 0.0
+        features["avg_confidence_all"] = 0.0
+        features["max_edge_all"] = 0.0
+        features["direction_consensus"] = 0.0
+        return features
+    
+    # How many strategies want to trade this window?
+    firing = [s for s in all_signals if s.get("should_trade")]
+    features["n_strategies_firing"] = float(len(firing))
+    
+    if not firing:
+        features["strategy_agreement"] = 0.0
+        features["avg_confidence_all"] = 0.0
+        features["max_edge_all"] = 0.0
+        features["direction_consensus"] = 0.0
+        return features
+    
+    # Direction consensus: +1 = all agree UP, -1 = all agree DOWN, 0 = split
+    up_count = sum(1 for s in firing if s["direction"] == "up")
+    down_count = len(firing) - up_count
+    features["direction_consensus"] = (up_count - down_count) / len(firing) if firing else 0.0
+    
+    # Agreement: do all firing strategies agree on direction?
+    features["strategy_agreement"] = 1.0 if (up_count == len(firing) or down_count == len(firing)) else 0.0
+    
+    # Aggregate signal quality
+    features["avg_confidence_all"] = np.mean([s["confidence"] for s in firing])
+    features["max_edge_all"] = max(s["edge_pct"] for s in firing)
+    
+    return features
+
+
 def _get_direction_streak(state):
     """Count consecutive same-direction outcomes from recent trades."""
     if not hasattr(state, 'recent_outcomes') or not state.recent_outcomes:

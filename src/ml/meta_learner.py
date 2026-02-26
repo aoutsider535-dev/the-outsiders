@@ -69,6 +69,9 @@ FEATURE_COLS = [
     "poly_ob_depth", "poly_ob_imbalance",
     # Strategy encoding (3)
     "is_trend_rider", "is_orderbook_imbalance", "is_smart_money",
+    # Cross-strategy context (5)
+    "n_strategies_firing", "strategy_agreement", "avg_confidence_all",
+    "max_edge_all", "direction_consensus",
 ]
 
 
