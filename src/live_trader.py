@@ -40,6 +40,7 @@ from src.strategies.trend_rider import (
     format_signal_message as trend_rider_format,
     DEFAULTS as TREND_RIDER_DEFAULTS,
 )
+from src.strategies.htf_context import get_htf_context, htf_agrees_with
 from src.strategies.mean_reversion import (
     generate_signal as meanrev_signal,
     format_signal_message as meanrev_format,
@@ -631,6 +632,15 @@ class LiveTrader:
         
         if key == "trend_rider":
             sig = trend_rider_signal(candles=candles, **common)
+            # HTF filter: only trade when 1hr trend agrees (55.1% → 56.0% WR boost)
+            if sig and sig.should_trade:
+                htf_ctx = get_htf_context()
+                if not htf_agrees_with(sig.direction, htf_ctx):
+                    sig.should_trade = False
+                    sig.reason = (f"⏸️ TrendRider: HTF disagrees | 1H: {htf_ctx.get('h1_trend', 0):+.2f} "
+                                  f"| Signal was {sig.direction.upper()}")
+                else:
+                    self.log(f"   🌐 HTF confirms {sig.direction.upper()} | {htf_ctx.get('description', '')}")
         elif key == "momentum":
             sig = momentum_signal(candles=candles[-state.params.get("lookback_minutes", 15):], **common)
         elif key == "mean_reversion":

@@ -42,6 +42,9 @@ STRATEGY_VERSIONS = {
         {"version": "v3", "start": 1771955100, "label": "Combo C + edge cap 20%"},
         {"version": "v4", "start": 1772035700, "label": "Min edge 11%, overnight gate, streak breaker"},
     ],
+    "btc_5min_trend_rider_LIVE": [
+        {"version": "v1", "start": 1772089800, "label": "Launch — EMA8/21 + VWAP + RSI zones"},
+    ],
 }
 
 STRATEGY_COLORS = {
@@ -49,10 +52,12 @@ STRATEGY_COLORS = {
     "btc_5min_meanrev_LIVE": "#f59e0b",
     "btc_5min_ob_imbalance_LIVE": "#8b5cf6",
     "btc_5min_smart_money_LIVE": "#ec4899",
+    "btc_5min_trend_rider_LIVE": "#22c55e",
     "btc_5min_momentum": "#6366f1",
     "btc_5min_meanrev": "#f59e0b",
     "btc_5min_ob_imbalance": "#8b5cf6",
     "btc_5min_smart_money": "#ec4899",
+    "btc_5min_trend_rider": "#22c55e",
 }
 
 STRATEGY_LABELS = {
@@ -60,10 +65,12 @@ STRATEGY_LABELS = {
     "btc_5min_meanrev_LIVE": "🔄 Mean Reversion",
     "btc_5min_ob_imbalance_LIVE": "📊 OB Imbalance",
     "btc_5min_smart_money_LIVE": "🧠 Smart Money",
+    "btc_5min_trend_rider_LIVE": "📈 Trend Rider",
     "btc_5min_momentum": "⚡ Momentum",
     "btc_5min_meanrev": "🔄 Mean Reversion",
     "btc_5min_ob_imbalance": "📊 OB Imbalance",
     "btc_5min_smart_money": "🧠 Smart Money",
+    "btc_5min_trend_rider": "📈 Trend Rider",
 }
 
 
@@ -634,7 +641,7 @@ def render_trade_history(df, limit=50):
 
 
 # ─── TABS ───
-tab_live, tab_paper, tab_paper_v2, tab_paper_v3 = st.tabs(["💰 LIVE TRADING", "📝 Paper Trading", "🧪 Paper v2", "🔄 Paper v3 (Inverse)"])
+tab_live, tab_paper, tab_paper_v2, tab_paper_v31 = st.tabs(["💰 LIVE TRADING", "📝 Paper Trading", "🧪 Paper v2", "🚀 Paper v3.1 (HTF)"])
 
 # ════════════════════════════════════════════
 # 💰 LIVE TAB
@@ -962,61 +969,61 @@ with tab_paper_v2:
 # ════════════════════════════════════════════
 # 🔄 PAPER v3 (INVERSE) TAB
 # ════════════════════════════════════════════
-PAPER_V3_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "paper_v3.db")
-PAPER_V3_STARTING = 100.0
+PAPER_V31_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "paper_v3_1.db")
+PAPER_V31_STARTING = 100.0
 
-with tab_paper_v3:
-    is_v3_running = check_trader_running("paper_trader_v3")
+with tab_paper_v31:
+    is_v31_running = check_trader_running("paper_trader_v3_1")
     now_pst = datetime.now(timezone.utc).astimezone(PST).strftime("%I:%M %p PST")
 
     st.markdown(f"""
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:24px">
-        <div style="width:12px;height:12px;border-radius:50%;background:{'#22c55e' if is_v3_running else '#ef4444'}"></div>
-        <span style="font-size:1.1rem;font-weight:600">Paper v3 (Inverse) {'Running' if is_v3_running else 'Stopped'}</span>
+        <div style="width:12px;height:12px;border-radius:50%;background:{'#22c55e' if is_v31_running else '#ef4444'}"></div>
+        <span style="font-size:1.1rem;font-weight:600">Paper v3.1 (HTF Enhanced) {'Running' if is_v31_running else 'Stopped'}</span>
         <span style="color:#94a3b8;font-size:0.9rem">{now_pst}</span>
     </div>
     """, unsafe_allow_html=True)
 
     st.markdown("""
-    <div style="background:#1e293b;border-left:4px solid #f59e0b;padding:12px 16px;border-radius:8px;margin-bottom:20px;color:#fbbf24">
-        🔄 <strong>Contrarian experiment:</strong> Every signal from v2 strategies is <em>flipped</em>.
-        If v2 says BUY UP → v3 buys DOWN. Testing whether the signals have information content in reverse.
+    <div style="background:#1e293b;border-left:4px solid #22c55e;padding:12px 16px;border-radius:8px;margin-bottom:20px;color:#86efac">
+        🚀 <strong>OOS-validated strategies with 1hr/4hr overlay:</strong><br>
+        📈 HTF Trend Follow (53.8% WR, high volume) · 🔁 Streak Reversal (65.2% WR) · 🎯 Combined Streak+Vol (81.2% WR, sniper)
     </div>
     """, unsafe_allow_html=True)
 
-    v3_closed = pd.DataFrame()
-    v3_open_count = 0
-    if os.path.exists(PAPER_V3_DB):
+    v31_closed = pd.DataFrame()
+    v31_open_count = 0
+    if os.path.exists(PAPER_V31_DB):
         try:
             import sqlite3 as _sq
-            _conn = _sq.connect(PAPER_V3_DB)
-            v3_closed = pd.read_sql_query(
+            _conn = _sq.connect(PAPER_V31_DB)
+            v31_closed = pd.read_sql_query(
                 "SELECT * FROM trades WHERE status='closed' ORDER BY timestamp", _conn
             )
-            v3_open_count = pd.read_sql_query(
+            v31_open_count = pd.read_sql_query(
                 "SELECT COUNT(*) as cnt FROM trades WHERE status='open'", _conn
             ).iloc[0]["cnt"]
             _conn.close()
         except Exception as e:
-            st.warning(f"Paper v3 DB error: {e}")
+            st.warning(f"Paper v3.1 DB error: {e}")
 
-    if v3_closed.empty:
-        st.info("🔄 Paper Trader v3 (Inverse) just started — waiting for trades to resolve...")
+    if v31_closed.empty:
+        st.info("🚀 Paper Trader v3.1 just started — waiting for trades to resolve...")
     else:
-        total_v3 = len(v3_closed)
-        wins_v3 = len(v3_closed[v3_closed["pnl"] > 0])
-        losses_v3 = total_v3 - wins_v3
-        wr_v3 = wins_v3 / total_v3 * 100 if total_v3 > 0 else 0
-        total_pnl_v3 = v3_closed["pnl"].sum()
-        balance_v3 = PAPER_V3_STARTING + total_pnl_v3
+        total_v31 = len(v31_closed)
+        wins_v31 = len(v31_closed[v31_closed["pnl"] > 0])
+        losses_v31 = total_v31 - wins_v31
+        wr_v31 = wins_v31 / total_v31 * 100 if total_v31 > 0 else 0
+        total_pnl_v31 = v31_closed["pnl"].sum()
+        balance_v31 = PAPER_V31_STARTING + total_pnl_v31
 
         col1, col2, col3, col4, col5 = st.columns(5)
         for col, label, value, cls in [
-            (col1, "Balance", f"${balance_v3:,.2f}", "positive" if balance_v3 >= PAPER_V3_STARTING else "negative"),
-            (col2, "P&L", f"${total_pnl_v3:+,.2f}", "positive" if total_pnl_v3 >= 0 else "negative"),
-            (col3, "Win Rate", f"{wr_v3:.1f}%", "positive" if wr_v3 >= 55 else "negative" if wr_v3 < 45 else ""),
-            (col4, "Trades", f"{total_v3}", ""),
-            (col5, "Open", f"{v3_open_count}", ""),
+            (col1, "Balance", f"${balance_v31:,.2f}", "positive" if balance_v31 >= PAPER_V31_STARTING else "negative"),
+            (col2, "P&L", f"${total_pnl_v31:+,.2f}", "positive" if total_pnl_v31 >= 0 else "negative"),
+            (col3, "Win Rate", f"{wr_v31:.1f}%", "positive" if wr_v31 >= 55 else "negative" if wr_v31 < 45 else ""),
+            (col4, "Trades", f"{total_v31}", ""),
+            (col5, "Open", f"{v31_open_count}", ""),
         ]:
             col.markdown(f"""
             <div class="metric-card">
@@ -1025,43 +1032,15 @@ with tab_paper_v3:
             </div>
             """, unsafe_allow_html=True)
 
-        if "time_pst" not in v3_closed.columns and "timestamp" in v3_closed.columns:
-            v3_closed["time_pst"] = pd.to_datetime(v3_closed["timestamp"], unit="s", utc=True).dt.tz_convert("US/Pacific").dt.strftime("%m/%d %I:%M %p")
+        if "time_pst" not in v31_closed.columns and "timestamp" in v31_closed.columns:
+            v31_closed["time_pst"] = pd.to_datetime(v31_closed["timestamp"], unit="s", utc=True).dt.tz_convert("US/Pacific").dt.strftime("%m/%d %I:%M %p")
 
         st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown('<div class="section-header">📈 Paper v3 Equity Curve</div>', unsafe_allow_html=True)
-        render_equity_chart(v3_closed, PAPER_V3_STARTING)
+        st.markdown('<div class="section-header">📈 Paper v3.1 Equity Curve</div>', unsafe_allow_html=True)
+        render_equity_chart(v31_closed, PAPER_V31_STARTING)
 
         st.markdown('<div class="section-header">🏆 Strategy Performance</div>', unsafe_allow_html=True)
-        render_strategy_cards(v3_closed)
-
-        # v2 vs v3 comparison
-        if not v2_closed.empty:
-            st.markdown('<div class="section-header">⚔️ v2 vs v3 Head-to-Head</div>', unsafe_allow_html=True)
-            v2_pnl = v2_closed["pnl"].sum()
-            v2_wr = len(v2_closed[v2_closed["pnl"] > 0]) / len(v2_closed) * 100 if len(v2_closed) > 0 else 0
-            leader = "v3 (Inverse)" if total_pnl_v3 > v2_pnl else "v2 (Original)" if v2_pnl > total_pnl_v3 else "Tied"
-            leader_color = "#22c55e" if leader != "Tied" else "#94a3b8"
-            st.markdown(f"""
-            <div style="background:#0f172a;border-radius:12px;padding:20px;margin-bottom:20px">
-                <div style="display:flex;justify-content:space-between;align-items:center">
-                    <div style="text-align:center;flex:1">
-                        <div style="font-size:0.85rem;color:#94a3b8">🧪 Paper v2</div>
-                        <div style="font-size:1.4rem;font-weight:700;color:{'#22c55e' if v2_pnl >= 0 else '#ef4444'}">${v2_pnl:+,.2f}</div>
-                        <div style="font-size:0.8rem;color:#94a3b8">{v2_wr:.0f}% WR · {len(v2_closed)} trades</div>
-                    </div>
-                    <div style="text-align:center;flex:0.5">
-                        <div style="font-size:1.5rem">⚔️</div>
-                        <div style="font-size:0.75rem;color:{leader_color};font-weight:600">{leader} leads</div>
-                    </div>
-                    <div style="text-align:center;flex:1">
-                        <div style="font-size:0.85rem;color:#94a3b8">🔄 Paper v3</div>
-                        <div style="font-size:1.4rem;font-weight:700;color:{'#22c55e' if total_pnl_v3 >= 0 else '#ef4444'}">${total_pnl_v3:+,.2f}</div>
-                        <div style="font-size:0.8rem;color:#94a3b8">{wr_v3:.0f}% WR · {total_v3} trades</div>
-                    </div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+        render_strategy_cards(v31_closed)
 
         st.markdown('<div class="section-header">📋 Trade History</div>', unsafe_allow_html=True)
-        render_trade_history(v3_closed)
+        render_trade_history(v31_closed)
