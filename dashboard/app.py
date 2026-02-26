@@ -197,6 +197,8 @@ def load_real_trades(limit=2000):
 
 # ─── PAGE CONFIG ───
 st.set_page_config(page_title="🏞 The Outsiders", page_icon="🏞", layout="wide", initial_sidebar_state="collapsed")
+from streamlit_autorefresh import st_autorefresh
+st_autorefresh(interval=30_000, limit=None, key="live_refresh")  # Refresh every 30s
 init_db()
 
 # ─── LIGHT THEME CSS ───
@@ -666,10 +668,29 @@ with tab_live:
     </div>
     """, unsafe_allow_html=True)
 
-    # Try real_trades first (on-chain verified), fall back to DB trades
+    # Combine real_trades (on-chain verified) with newer trades from DB
     df_real = load_real_trades()
-    df_live = df_real if not df_real.empty else load_trades(is_live=True)
-    using_real = not df_real.empty
+    df_db = load_trades(is_live=True)
+    if not df_real.empty and not df_db.empty:
+        # Find the latest real_trade timestamp, then append any DB trades after it
+        # Both tables use unix epoch for timestamp
+        latest_real = pd.to_numeric(df_real["timestamp"], errors="coerce").max() if "timestamp" in df_real.columns else None
+        if latest_real and pd.notna(latest_real):
+            db_ts = pd.to_numeric(df_db["timestamp"], errors="coerce")
+            newer_db = df_db[db_ts > latest_real]
+            if not newer_db.empty:
+                df_live = pd.concat([df_real, newer_db], ignore_index=True)
+            else:
+                df_live = df_real
+        else:
+            df_live = df_real
+        using_real = True
+    elif not df_real.empty:
+        df_live = df_real
+        using_real = True
+    else:
+        df_live = df_db
+        using_real = False
 
     if df_live.empty:
         st.markdown('<div style="text-align:center;padding:60px;"><h2 style="color:#94a3b8;">🚀 No live trades yet</h2></div>', unsafe_allow_html=True)

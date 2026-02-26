@@ -58,6 +58,8 @@ from src.strategies.smart_money import (
 )
 from src.database import init_db, insert_trade, close_trade, DB_PATH, get_connection
 from src.data.binance import get_derivatives_signals
+from src.ml.features import extract_features
+from src.ml.meta_learner import MetaLearner
 from src.redeemer import Redeemer
 
 PST = timezone(timedelta(hours=-8))
@@ -127,6 +129,7 @@ class StrategyState:
         self.cooldown_skips = 0  # Trades to skip after loss streak
         self.kelly_fraction = 0.04  # Default 4%, updated by Kelly calc
         self.kelly_last_calc = 0  # Trade count at last Kelly recalc
+        self.recent_outcomes = []  # Last N outcome directions for ML features
 
 
 class LiveTrader:
@@ -143,6 +146,7 @@ class LiveTrader:
         self.client = None
         self.redeemer = None
         self.initial_balance = 0.0
+        self.ml = MetaLearner(DB_PATH)
         
         for key, config in STRATEGY_CONFIG.items():
             self.strategies[key] = StrategyState(key, config)
@@ -457,6 +461,12 @@ class LiveTrader:
                     f"SL={p['stop_loss_pct']}% | Edge>={p['min_edge_pct']}% | "
                     f"Kelly={s.kelly_fraction*100:.1f}% (${size:.2f})")
         self.log(f"🔒 Max positions: {self.max_per_strategy}/strategy, {self.max_total} total")
+        ml_stats = self.ml.get_stats()
+        if ml_stats["is_exploring"]:
+            self.log(f"🧠 ML Meta-Learner: EXPLORING ({ml_stats['total_samples']}/{30} trades until active)")
+        else:
+            self.log(f"🧠 ML Meta-Learner: ACTIVE v{ml_stats['model_version']} | "
+                     f"Taken WR: {ml_stats['taken']['wr']:.0%} | Skipped WR: {ml_stats['skipped']['wr']:.0%}")
         print("=" * 60)
         print("Press Ctrl+C to stop\n")
         
@@ -496,21 +506,33 @@ class LiveTrader:
             self.log("⏳ No active market found, waiting...")
             return
         
-        # Auto-cleanup stuck trades (>30 min old on 5-min markets)
+        # Auto-resolve stuck trades (>15 min old on 5-min markets)
+        # Try resolution first; only zero out if resolution unavailable after 45 min
         now_ts = int(time.time())
         for s in self.strategies.values():
-            before = len(s.open_trades)
-            stuck = [t for t in s.open_trades if now_ts - t.get("window_end_ts", now_ts) > 1800]
+            stuck = [t for t in s.open_trades if now_ts - t.get("window_end_ts", now_ts) > 900]
             for t in stuck:
+                age_min = (now_ts - t.get("window_end_ts", now_ts)) // 60
                 try:
-                    conn = sqlite3.connect(DB_PATH)
-                    conn.execute(
-                        "UPDATE trades SET status='closed', exit_reason='stuck_auto', pnl=0, closed_at=datetime('now') WHERE id=?",
-                        (t["id"],))
-                    conn.commit()
-                    conn.close()
-                    s.open_trades.remove(t)
-                    self.log(f"🧹 {s.display}: Auto-cleaned stuck trade #{t['id']} ({(now_ts - t.get('window_end_ts', now_ts))//60}min old)")
+                    # Try to resolve properly first
+                    resolution = check_market_resolution(t["market_slug"])
+                    if resolution and resolution.get("resolved") and resolution.get("winner"):
+                        # Proper resolution — let _check_open_trades handle it
+                        self.log(f"🔍 {s.display}: Stuck trade #{t['id']} ({age_min}min) has resolution — will resolve next cycle")
+                        continue
+                    
+                    # No resolution available — zero out only if very old (>45 min)
+                    if age_min > 45:
+                        conn = sqlite3.connect(DB_PATH)
+                        conn.execute(
+                            "UPDATE trades SET status='closed', exit_reason='stuck_auto', pnl=0, closed_at=datetime('now') WHERE id=?",
+                            (t["id"],))
+                        conn.commit()
+                        conn.close()
+                        s.open_trades.remove(t)
+                        self.log(f"🧹 {s.display}: Auto-cleaned stuck trade #{t['id']} ({age_min}min old, no resolution)")
+                    else:
+                        self.log(f"⏳ {s.display}: Trade #{t['id']} waiting for resolution ({age_min}min old)")
                 except Exception as e:
                     self.log(f"⚠️ Stuck cleanup error: {e}")
         
@@ -590,10 +612,8 @@ class LiveTrader:
             self.trade_size = self._calc_trade_size(balance, strategy_key=key)
             has_funds = balance is not None and balance >= self.trade_size
             
-            # Overnight gate: disable Momentum + Smart Money 12AM-6AM PST (poor WR)
-            hour_pst = datetime.now(timezone.utc).astimezone(PST).hour
-            is_overnight = hour_pst < 6
-            overnight_blocked = is_overnight and state.key in ("trend_rider", "momentum", "smart_money")
+            # Overnight gate: DISABLED per user request (was 12AM-6AM PST)
+            overnight_blocked = False
             
             # Loss streak cooldown check
             in_cooldown = state.cooldown_skips > 0
@@ -602,8 +622,40 @@ class LiveTrader:
             if hasattr(sig, 'shadow_trade') and sig.shadow_trade:
                 self.log(f"   👻 {state.display}: Edge {sig.edge_pct:.1f}% above cap — skipped")
             
-            if sig.should_trade and can_trade and strategy_cap and has_funds and not in_cooldown and not overnight_blocked:
+            # ML Meta-Learner gate
+            ml_approved = True
+            ml_reason = ""
+            if sig.should_trade and can_trade and strategy_cap and has_funds and not in_cooldown:
+                try:
+                    # Fetch HTF context for ML (cached, cheap call)
+                    try:
+                        _htf_ctx = get_htf_context()
+                    except Exception:
+                        _htf_ctx = None
+                    
+                    ml_features = extract_features(
+                        candles, sig, key, state,
+                        market_snapshot={
+                            "up_price": snapshot["up_price"],
+                            "down_price": snapshot["down_price"],
+                            "up_orderbook": up_ob,
+                            "down_orderbook": down_ob,
+                        },
+                        htf_context=_htf_ctx,
+                        derivatives=derivatives,
+                        orderbook=orderbook_data,
+                    )
+                    ml_approved, ml_prob, ml_reason = self.ml.should_trade(ml_features, key)
+                    if ml_reason:
+                        self.log(f"   {ml_reason}")
+                except Exception as e:
+                    self.log(f"   ⚠️ ML error (defaulting to trade): {e}")
+                    ml_approved = True
+            
+            if sig.should_trade and can_trade and strategy_cap and has_funds and not in_cooldown and ml_approved:
                 self._execute_live_trade(state, sig, snapshot)
+            elif sig.should_trade and not ml_approved:
+                self.log(f"   🧠 {state.display}: ML blocked — {ml_reason}")
             elif sig.should_trade and overnight_blocked:
                 self.log(f"   🌙 {state.display}: Overnight gate — skipping (12AM-6AM PST)")
             elif sig.should_trade and in_cooldown:
@@ -893,7 +945,8 @@ class LiveTrader:
         resolved_indices = []
         
         for i, trade in enumerate(state.open_trades):
-            if current_snapshot["slug"] == trade["market_slug"]:
+            # Skip if this trade's market window hasn't ended yet
+            if trade.get("window_end_ts") and int(time.time()) < trade["window_end_ts"]:
                 continue
             
             resolution = check_market_resolution(trade["market_slug"])
@@ -940,6 +993,14 @@ class LiveTrader:
             state.trade_count += 1
             
             close_trade(trade["id"], 1.0 if won else 0.0, pnl, pnl_pct, exit_reason)
+            
+            # Feed outcome to ML meta-learner
+            try:
+                self.ml.record_outcome(trade["id"], won, pnl)
+                state.recent_outcomes.append(actual_winner)
+                state.recent_outcomes = state.recent_outcomes[-20:]  # Keep last 20
+            except Exception:
+                pass
             
             # Auto-redeem resolved positions (wins get USDC back, losses clear the position)
             if self.redeemer and trade.get("condition_id"):
