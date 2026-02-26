@@ -736,13 +736,15 @@ with tab_live:
                 earliest = datetime.now(PST) - timedelta(days=7)
                 latest = datetime.now(PST)
             
+            # Dynamic key forces slider to reset when data range changes
+            slider_key = f"live_time_slider_{int(latest.timestamp())}"
             time_range = st.slider(
                 "⏱️ Time Range",
                 min_value=earliest,
                 max_value=latest,
                 value=(earliest, latest),
                 format="MM/DD HH:mm",
-                key="live_time_slider"
+                key=slider_key
             )
             time_start, time_end = time_range
 
