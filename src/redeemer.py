@@ -90,8 +90,13 @@ PROXY_ABI = json.loads("""[
     }
 ]""")
 
-# Default Polygon RPC (free, generous limits)
-DEFAULT_RPC = "https://1rpc.io/matic"
+# Polygon RPCs with fallback
+POLYGON_RPCS = [
+    "https://polygon-rpc.com",
+    "https://1rpc.io/matic",
+    "https://rpc-mainnet.maticvigil.com",
+]
+DEFAULT_RPC = POLYGON_RPCS[0]
 
 PST = timezone(timedelta(hours=-8))
 
@@ -244,19 +249,32 @@ class Redeemer:
                 "data": calldata,
                 "nonce": self._get_nonce(),
                 "gas": 300_000,
-                "gasPrice": max(self.w3.eth.gas_price, 30_000_000_000),  # min 30 Gwei
+                "gasPrice": int(max(self.w3.eth.gas_price * 1.25, 50_000_000_000)),  # 1.25x current or min 50 Gwei
                 "chainId": 137,
                 "value": 0,
             }
 
-            # Sign and send
+            # Sign and send (with RPC fallback)
             signed = self.account.sign_transaction(tx)
-            tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
+            tx_hash = None
+            for rpc_url in POLYGON_RPCS:
+                try:
+                    w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 10}))
+                    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+                    self.w3 = w3  # Switch to working RPC
+                    break
+                except Exception as rpc_err:
+                    logger.warning(f"[{self._ts()}] RPC {rpc_url} failed: {rpc_err}")
+                    continue
+            
+            if tx_hash is None:
+                return {"success": False, "error": "all RPCs failed"}
+            
             tx_hash_hex = tx_hash.hex()
 
             logger.info(f"[{self._ts()}] 📤 Redeem tx sent: {tx_hash_hex}")
 
-            # Wait for receipt (up to 60s)
+            # Wait for receipt (up to 120s)
             receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
 
             self._record_redeem()
