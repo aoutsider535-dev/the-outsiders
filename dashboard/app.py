@@ -140,7 +140,7 @@ def check_trader_running(name="live_trader"):
 
 def load_trades(is_live=True, limit=2000):
     conn = get_connection()
-    q = "SELECT * FROM trades WHERE strategy {} '%_LIVE' ORDER BY timestamp DESC LIMIT ?".format(
+    q = "SELECT * FROM trades WHERE strategy {} '%_LIVE' AND (is_simulated = 0 OR is_simulated IS NULL) ORDER BY timestamp DESC LIMIT ?".format(
         "LIKE" if is_live else "NOT LIKE")
     rows = conn.execute(q, (limit,)).fetchall()
     conn.close()
