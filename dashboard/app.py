@@ -692,6 +692,16 @@ with tab_live:
         df_live = df_db
         using_real = False
 
+    # Ensure all rows have time_pst and version after merge
+    if not df_live.empty:
+        if "timestamp" in df_live.columns:
+            df_live["time_pst"] = pd.to_datetime(pd.to_numeric(df_live["timestamp"], errors="coerce"), unit="s", utc=True).dt.tz_convert("US/Pacific")
+            df_live["time_display"] = df_live["timestamp"].apply(to_pst)
+        if "version" not in df_live.columns or df_live["version"].isna().any():
+            df_live["version"] = df_live.apply(
+                lambda row: get_strategy_version(row.get("strategy", ""), row.get("timestamp", 0)) 
+                if pd.isna(row.get("version")) else row["version"], axis=1)
+    
     if df_live.empty:
         st.markdown('<div style="text-align:center;padding:60px;"><h2 style="color:#94a3b8;">🚀 No live trades yet</h2></div>', unsafe_allow_html=True)
     else:
