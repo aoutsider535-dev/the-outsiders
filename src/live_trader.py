@@ -670,7 +670,10 @@ class LiveTrader:
                         derivatives=derivatives,
                         orderbook=orderbook_data,
                     )
-                    ml_approved, ml_prob, ml_reason = self.ml.should_trade(ml_features, key)
+                    _entry = snapshot["up_price"] if sig.direction == "up" else snapshot["down_price"]
+                    ml_approved, ml_prob, ml_reason = self.ml.should_trade(
+                        ml_features, key, entry_price=_entry, trade_size=self.trade_size
+                    )
                     if ml_reason:
                         self.log(f"   {ml_reason}")
                 except Exception as e:
