@@ -643,7 +643,7 @@ def render_trade_history(df, limit=50):
 
 
 # ─── TABS ───
-tab_live, tab_paper_v31, tab_paper_v32, tab_paper_v33, tab_ml = st.tabs(["💰 LIVE TRADING", "🚀 Paper v3.1 (HTF)", "🔄 Paper v3.2 (Inverse)", "🪞 Paper v3.3 (Mirror)", "🧠 ML Brain"])
+tab_live, tab_paper_v31, tab_paper_v32, tab_paper_v33, tab_ml, tab_mc = st.tabs(["💰 LIVE TRADING", "🚀 Paper v3.1 (HTF)", "🔄 Paper v3.2 (Inverse)", "🪞 Paper v3.3 (Mirror)", "🧠 ML Brain", "🎛️ Mission Control"])
 
 # ════════════════════════════════════════════
 # 💰 LIVE TAB
@@ -1244,3 +1244,210 @@ with tab_ml:
         if "prediction" in recent_preds.columns:
             recent_preds["prediction"] = recent_preds["prediction"].apply(lambda x: f"{x:.1%}" if pd.notna(x) else "—")
         st.dataframe(recent_preds, use_container_width=True)
+
+# ─── MISSION CONTROL TAB ───
+with tab_mc:
+    import subprocess
+    import re as _re
+
+    st.markdown("""
+    <div class="metric-card">
+        <span style="font-size:1.3rem;font-weight:700">🎛️ Mission Control</span>
+        <span style="color:#94a3b8;font-size:0.85rem"> — The Outsiders Operations Hub</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── System Health ──
+    st.markdown("### 🏥 System Health")
+    
+    health_cols = st.columns(4)
+    
+    # Process status checks
+    def check_process(name):
+        try:
+            result = subprocess.run(["pgrep", "-f", name], capture_output=True, text=True, timeout=3)
+            return result.returncode == 0
+        except:
+            return False
+    
+    processes = {
+        "Live Trader": "live_trader.py",
+        "Paper v3.1": "paper_trader_v3_1.py",
+        "Paper v3.2": "paper_trader_v3_2.py",
+        "Paper v3.3": "paper_trader_v3_3.py",
+    }
+    
+    for i, (label, proc) in enumerate(processes.items()):
+        running = check_process(proc)
+        status = "🟢 Running" if running else "🔴 Stopped"
+        health_cols[i % 4].metric(label, status)
+
+    # ML + Balance row
+    ml_bal_cols = st.columns(4)
+    
+    try:
+        import sqlite3 as _sq2
+        _mc_conn = _sq2.connect(DB_PATH)
+        ml_resolved = _mc_conn.execute("SELECT COUNT(*) FROM ml_features WHERE outcome IS NOT NULL").fetchone()[0]
+        ml_total = _mc_conn.execute("SELECT COUNT(*) FROM ml_features").fetchone()[0]
+        ml_status = f"🧠 {ml_resolved}/100" if ml_resolved < 100 else "🧠 Active"
+        
+        # Open trades
+        open_count = _mc_conn.execute("SELECT COUNT(*) FROM trades WHERE status='open'").fetchone()[0]
+        
+        # Today's trades
+        today_trades = _mc_conn.execute(
+            "SELECT COUNT(*), SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END), COALESCE(SUM(pnl), 0) "
+            "FROM trades WHERE status='closed' AND exit_reason IN ('win_live','loss_live') "
+            "AND timestamp > strftime('%s','now','-24 hours')"
+        ).fetchone()
+        _mc_conn.close()
+        
+        ml_bal_cols[0].metric("ML Exploration", ml_status, f"{ml_total} total samples")
+        ml_bal_cols[1].metric("Open Trades", str(open_count))
+        
+        t_count, t_wins, t_pnl = today_trades
+        t_count = t_count or 0
+        t_wins = t_wins or 0
+        t_pnl = t_pnl or 0
+        t_wr = f"{t_wins/t_count*100:.0f}%" if t_count > 0 else "—"
+        ml_bal_cols[2].metric("24h Trades", f"{t_count} ({t_wr})", f"${t_pnl:+.2f}")
+        
+    except Exception as e:
+        ml_bal_cols[0].metric("ML", f"Error: {e}")
+
+    # RPC Health
+    ml_bal_cols[3].metric("Auto-Claimer", "🟢 Enabled" if check_process("live_trader.py") else "⚠️ Down")
+
+    # ── Recent Errors ──
+    st.markdown("### ⚠️ Recent Errors (last 24h)")
+    try:
+        log_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "live_trader.log")
+        if os.path.exists(log_path):
+            result = subprocess.run(
+                ["grep", "-iE", "error|fail|❌.*Redeem|⚠️.*Redeem|429|401|403|timed out", log_path],
+                capture_output=True, text=True, timeout=5
+            )
+            errors = result.stdout.strip().split("\n") if result.stdout.strip() else []
+            errors = [e for e in errors[-20:] if e.strip()]  # last 20
+            if errors:
+                for err in errors[-10:]:
+                    st.text(err[:120])
+            else:
+                st.success("No errors in logs ✅")
+        else:
+            st.info("Log file not found")
+    except Exception as e:
+        st.warning(f"Could not read logs: {e}")
+
+    # ── Task Board (Kanban) ──
+    st.markdown("### 📋 Task Board")
+    
+    queue_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "QUEUE.md")
+    # Try multiple paths
+    for qp in [queue_path, os.path.expanduser("~/.openclaw/workspace/QUEUE.md")]:
+        if os.path.exists(qp):
+            queue_path = qp
+            break
+    
+    if os.path.exists(queue_path):
+        with open(queue_path, "r") as f:
+            queue_content = f.read()
+        
+        # Parse sections
+        sections = {}
+        current_section = None
+        current_items = []
+        
+        for line in queue_content.split("\n"):
+            if line.startswith("## "):
+                if current_section:
+                    sections[current_section] = current_items
+                current_section = line[3:].strip()
+                current_items = []
+            elif line.strip().startswith("- ["):
+                checked = line.strip().startswith("- [x]")
+                text = _re.sub(r'^- \[[ x]\]\s*', '', line.strip())
+                current_items.append({"text": text, "done": checked})
+        if current_section:
+            sections[current_section] = current_items
+        
+        # Render as columns
+        kanban_labels = ["🔴 Blocked", "🟡 In Progress", "🟢 Ready to Do", "✅ Done (Recent)"]
+        kanban_cols = st.columns(4)
+        
+        for i, label in enumerate(kanban_labels):
+            with kanban_cols[i]:
+                st.markdown(f"**{label}**")
+                # Match section by emoji/keyword
+                matched = None
+                for section_name, items in sections.items():
+                    if any(k in section_name for k in [label.split(" ", 1)[-1][:6], label[2:8]]):
+                        matched = items
+                        break
+                # Fallback: match by position
+                if matched is None:
+                    section_keys = list(sections.keys())
+                    if i < len(section_keys):
+                        matched = sections[section_keys[i]]
+                
+                if matched:
+                    for item in matched[:8]:  # max 8 per column
+                        icon = "✅" if item["done"] else "⬜"
+                        st.markdown(f"{icon} {item['text'][:60]}", help=item['text'])
+                else:
+                    st.caption("Empty")
+    else:
+        st.info("QUEUE.md not found — create it to populate the task board")
+
+    # ── Learnings (Recent) ──
+    st.markdown("### 📚 Recent Learnings")
+    learnings_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "memory", "learnings.md")
+    for lp in [learnings_path, os.path.expanduser("~/.openclaw/workspace/memory/learnings.md")]:
+        if os.path.exists(lp):
+            learnings_path = lp
+            break
+    
+    if os.path.exists(learnings_path):
+        with open(learnings_path, "r") as f:
+            content = f.read()
+        
+        # Extract lesson names
+        lessons = [line.strip("# ").strip() for line in content.split("\n") if line.startswith("### ")]
+        if lessons:
+            for lesson in lessons:
+                st.markdown(f"- 🧠 **{lesson}**")
+            with st.expander("View full learnings"):
+                st.markdown(content)
+        else:
+            st.info("No learnings recorded yet")
+    else:
+        st.info("memory/learnings.md not found")
+
+    # ── Git Status ──
+    st.markdown("### 📦 Git Status")
+    try:
+        bot_dir = os.path.dirname(os.path.dirname(__file__))
+        git_log = subprocess.run(
+            ["git", "log", "--oneline", "-5"],
+            capture_output=True, text=True, cwd=bot_dir, timeout=5
+        )
+        git_status = subprocess.run(
+            ["git", "status", "--short"],
+            capture_output=True, text=True, cwd=bot_dir, timeout=5
+        )
+        
+        git_cols = st.columns(2)
+        with git_cols[0]:
+            st.markdown("**Recent Commits**")
+            for line in git_log.stdout.strip().split("\n")[:5]:
+                st.text(line)
+        with git_cols[1]:
+            st.markdown("**Uncommitted Changes**")
+            if git_status.stdout.strip():
+                for line in git_status.stdout.strip().split("\n")[:10]:
+                    st.text(line)
+            else:
+                st.success("Clean working tree ✅")
+    except Exception as e:
+        st.warning(f"Git error: {e}")
