@@ -475,7 +475,7 @@ class LiveTrader:
         self.log(f"🔒 Max positions: {self.max_per_strategy}/strategy, {self.max_total} total")
         ml_stats = self.ml.get_stats()
         if ml_stats["is_exploring"]:
-            self.log(f"🧠 ML Meta-Learner: EXPLORING ({ml_stats['total_samples']}/{30} trades until active)")
+            self.log(f"🧠 ML Meta-Learner: EXPLORING ({ml_stats['total_samples']}/{100} trades until active)")
         else:
             self.log(f"🧠 ML Meta-Learner: ACTIVE v{ml_stats['model_version']} | "
                      f"Taken WR: {ml_stats['taken']['wr']:.0%} | Skipped WR: {ml_stats['skipped']['wr']:.0%}")
@@ -1027,6 +1027,20 @@ class LiveTrader:
         }
         
         trade_id = insert_trade(trade_data)
+        
+        # Link ML features row to this trade_id so outcomes can be recorded
+        try:
+            conn_ml = sqlite3.connect(DB_PATH)
+            conn_ml.execute(
+                """UPDATE ml_features SET trade_id = ? 
+                   WHERE id = (SELECT id FROM ml_features WHERE trade_id IS NULL AND strategy = ? 
+                   ORDER BY id DESC LIMIT 1)""",
+                (trade_id, state.key)
+            )
+            conn_ml.commit()
+            conn_ml.close()
+        except Exception:
+            pass
         
         state.open_trades.append({
             "id": trade_id,

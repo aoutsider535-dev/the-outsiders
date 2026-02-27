@@ -21,7 +21,7 @@ from datetime import datetime, timezone, timedelta
 PST = timezone(timedelta(hours=-8))
 
 # ─── CONFIG ───
-MIN_TRAINING_SAMPLES = 30     # Explore first, then filter
+MIN_TRAINING_SAMPLES = 100    # Explore first, then filter (clean slate)
 RETRAIN_INTERVAL = 15         # Retrain every N resolved trades
 TRAINING_WINDOW = 500         # Rolling window for training
 

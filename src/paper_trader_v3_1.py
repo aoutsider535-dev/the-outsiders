@@ -91,7 +91,7 @@ class PaperTraderV31:
 
     def __init__(self, max_per_strategy=5, max_total=15,
                  trade_size_min=1.0, trade_size_max=50.0):
-        self.balance = self.STARTING_BALANCE
+        self.balance = self._recover_balance()
         self.trade_size_min = trade_size_min
         self.trade_size_max = trade_size_max
         self.max_per_strategy = max_per_strategy
@@ -133,6 +133,23 @@ class PaperTraderV31:
         """)
         conn.commit()
         conn.close()
+
+    def _recover_balance(self):
+        """Recover balance from DB instead of assuming starting balance."""
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            pnl = conn.execute("SELECT COALESCE(SUM(pnl), 0) FROM trades WHERE status='closed'").fetchone()[0]
+            # Also subtract cost of open trades
+            open_cost = conn.execute(
+                "SELECT COALESCE(SUM(entry_price * quantity + fees), 0) FROM trades WHERE status='open'"
+            ).fetchone()[0]
+            conn.close()
+            bal = self.STARTING_BALANCE + pnl - open_cost
+            if abs(bal - self.STARTING_BALANCE) > 0.01:
+                print(f"💰 Recovered balance from DB: ${bal:.2f} (P&L: ${pnl:+.2f}, locked: ${open_cost:.2f})")
+            return bal
+        except:
+            return self.STARTING_BALANCE
 
     def _calc_trade_size(self, strategy_key=None):
         if self.balance <= 0:

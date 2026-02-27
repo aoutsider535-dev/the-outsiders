@@ -92,9 +92,9 @@ PROXY_ABI = json.loads("""[
 
 # Polygon RPCs with fallback
 POLYGON_RPCS = [
-    "https://polygon-rpc.com",
+    "https://polygon.drpc.org",
+    "https://polygon-bor-rpc.publicnode.com",
     "https://1rpc.io/matic",
-    "https://rpc-mainnet.maticvigil.com",
 ]
 DEFAULT_RPC = POLYGON_RPCS[0]
 
@@ -243,13 +243,24 @@ class Redeemer:
             patched[192:224] = (0x80).to_bytes(32, 'big')
             calldata = FACTORY_PROXY_SELECTOR + bytes(patched)
 
+            # Get gas price with RPC fallback
+            gas_price = 50_000_000_000  # default 50 Gwei
+            for rpc_url in POLYGON_RPCS:
+                try:
+                    w3_tmp = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 8}))
+                    gas_price = int(max(w3_tmp.eth.gas_price * 1.25, 50_000_000_000))
+                    self.w3 = w3_tmp  # switch to working RPC
+                    break
+                except Exception:
+                    continue
+
             tx = {
                 "from": self.eoa_address,
                 "to": Web3.to_checksum_address(FACTORY_ADDRESS),
                 "data": calldata,
                 "nonce": self._get_nonce(),
                 "gas": 300_000,
-                "gasPrice": int(max(self.w3.eth.gas_price * 1.25, 50_000_000_000)),  # 1.25x current or min 50 Gwei
+                "gasPrice": gas_price,
                 "chainId": 137,
                 "value": 0,
             }

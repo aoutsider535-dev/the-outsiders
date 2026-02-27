@@ -643,7 +643,7 @@ def render_trade_history(df, limit=50):
 
 
 # ─── TABS ───
-tab_live, tab_paper, tab_paper_v2, tab_paper_v31, tab_ml = st.tabs(["💰 LIVE TRADING", "📝 Paper Trading", "🧪 Paper v2", "🚀 Paper v3.1 (HTF)", "🧠 ML Brain"])
+tab_live, tab_paper_v31, tab_paper_v32, tab_paper_v33, tab_ml = st.tabs(["💰 LIVE TRADING", "🚀 Paper v3.1 (HTF)", "🔄 Paper v3.2 (Inverse)", "🪞 Paper v3.3 (Mirror)", "🧠 ML Brain"])
 
 # ════════════════════════════════════════════
 # 💰 LIVE TAB
@@ -854,151 +854,6 @@ with tab_live:
         st.markdown('<div class="section-header">📋 Trade History</div>', unsafe_allow_html=True)
         render_trade_history(filtered)
 
-
-# ════════════════════════════════════════════
-# 📝 PAPER TAB
-# ════════════════════════════════════════════
-with tab_paper:
-    st.markdown(f"""
-    <div class="hero-header">
-        <div class="hero-title" style="background: linear-gradient(135deg, #0ea5e9 0%, #6366f1 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">
-            📝 Paper Trading
-        </div>
-        <div class="hero-sub">Backtested with real market resolution</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    df_paper = load_trades(is_live=False)
-
-    if df_paper.empty:
-        st.info("No paper trades found.")
-    else:
-        if "exit_reason" in df_paper.columns:
-            df_paper_real = df_paper[df_paper["exit_reason"].str.contains("real", na=False)]
-        else:
-            df_paper_real = df_paper
-
-        closed_paper = df_paper_real[df_paper_real["status"] == "closed"] if "status" in df_paper_real.columns else df_paper_real
-        all_paper_strats = sorted(closed_paper["strategy"].unique().tolist()) if "strategy" in closed_paper.columns else []
-
-        pc1, pc2 = st.columns([3, 2])
-        with pc1:
-            paper_strats = st.multiselect("Strategies", options=all_paper_strats, default=all_paper_strats,
-                                          format_func=lambda x: strategy_label(x), key="paper_strat")
-        with pc2:
-            paper_res = st.selectbox("Resolution", ["Real Only", "All Trades"], key="paper_res")
-
-        if paper_res == "All Trades":
-            paper_closed = df_paper[df_paper["status"] == "closed"] if "status" in df_paper.columns else df_paper
-        else:
-            paper_closed = closed_paper
-
-        if paper_strats:
-            paper_closed = paper_closed[paper_closed["strategy"].isin(paper_strats)]
-
-        p_stats = compute_stats(paper_closed)
-        p_pnl = p_stats["pnl"]
-        p_bal = PAPER_STARTING_BALANCE + p_pnl
-        p_roi = (p_pnl / PAPER_STARTING_BALANCE) * 100
-
-        pk1, pk2, pk3, pk4 = st.columns(4)
-        for col, label, value, cls in [
-            (pk1, "Balance", f"${p_bal:,.2f}", "win" if p_bal >= PAPER_STARTING_BALANCE else "loss"),
-            (pk2, "P&L", f"${p_pnl:+,.2f} ({p_roi:+.1f}%)", "win" if p_pnl >= 0 else "loss"),
-            (pk3, "Record", f"{p_stats['wins']}W · {p_stats['losses']}L", "neutral"),
-            (pk4, "Win Rate", f"{p_stats['wr']:.1f}%", "win" if p_stats['wr'] >= 50 else "loss"),
-        ]:
-            col.markdown(f"""
-            <div class="metric-card">
-                <div class="metric-label">{label}</div>
-                <div class="metric-value {cls}">{value}</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown('<div class="section-header">📈 Paper Equity Curve</div>', unsafe_allow_html=True)
-        render_equity_chart(paper_closed, PAPER_STARTING_BALANCE)
-
-        st.markdown('<div class="section-header">🏆 Strategy Performance</div>', unsafe_allow_html=True)
-        render_strategy_cards(paper_closed)
-
-        st.markdown('<div class="section-header">📋 Trade History</div>', unsafe_allow_html=True)
-        render_trade_history(paper_closed)
-
-# ════════════════════════════════════════════
-# 🧪 PAPER v2 TAB
-# ════════════════════════════════════════════
-PAPER_V2_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "paper_v2.db")
-PAPER_V2_STARTING = 100.0
-
-with tab_paper_v2:
-    is_v2_running = check_trader_running("paper_trader_v2")
-    now_pst = datetime.now(timezone.utc).astimezone(PST).strftime("%I:%M %p PST")
-
-    st.markdown(f"""
-    <div style="display:flex;align-items:center;gap:12px;margin-bottom:24px">
-        <div style="width:12px;height:12px;border-radius:50%;background:{'#22c55e' if is_v2_running else '#ef4444'}"></div>
-        <span style="font-size:1.1rem;font-weight:600">Paper v2 {'Running' if is_v2_running else 'Stopped'}</span>
-        <span style="color:#94a3b8;font-size:0.9rem">{now_pst}</span>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # Load paper v2 trades
-    v2_closed = pd.DataFrame()
-    if os.path.exists(PAPER_V2_DB):
-        try:
-            import sqlite3 as _sq
-            _conn = _sq.connect(PAPER_V2_DB)
-            v2_closed = pd.read_sql_query(
-                "SELECT * FROM trades WHERE status='closed' ORDER BY timestamp", _conn
-            )
-            v2_open_count = pd.read_sql_query(
-                "SELECT COUNT(*) as cnt FROM trades WHERE status='open'", _conn
-            ).iloc[0]["cnt"]
-            _conn.close()
-        except Exception as e:
-            st.warning(f"Paper v2 DB error: {e}")
-            v2_open_count = 0
-
-    if v2_closed.empty:
-        st.info("🧪 Paper Trader v2 just started — waiting for trades to resolve...")
-    else:
-        total_v2 = len(v2_closed)
-        wins_v2 = len(v2_closed[v2_closed["pnl"] > 0])
-        losses_v2 = total_v2 - wins_v2
-        wr_v2 = wins_v2 / total_v2 * 100 if total_v2 > 0 else 0
-        total_pnl_v2 = v2_closed["pnl"].sum()
-        balance_v2 = PAPER_V2_STARTING + total_pnl_v2
-
-        col1, col2, col3, col4, col5 = st.columns(5)
-        for col, label, value, cls in [
-            (col1, "Balance", f"${balance_v2:,.2f}", "positive" if balance_v2 >= PAPER_V2_STARTING else "negative"),
-            (col2, "P&L", f"${total_pnl_v2:+,.2f}", "positive" if total_pnl_v2 >= 0 else "negative"),
-            (col3, "Win Rate", f"{wr_v2:.1f}%", "positive" if wr_v2 >= 55 else "negative" if wr_v2 < 45 else ""),
-            (col4, "Trades", f"{total_v2}", ""),
-            (col5, "Open", f"{v2_open_count}", ""),
-        ]:
-            col.markdown(f"""
-            <div class="metric-card">
-                <div class="metric-label">{label}</div>
-                <div class="metric-value {cls}">{value}</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-        # Add time_pst column for charts
-        if "time_pst" not in v2_closed.columns and "timestamp" in v2_closed.columns:
-            v2_closed["time_pst"] = pd.to_datetime(v2_closed["timestamp"], unit="s", utc=True).dt.tz_convert("US/Pacific").dt.strftime("%m/%d %I:%M %p")
-
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown('<div class="section-header">📈 Paper v2 Equity Curve</div>', unsafe_allow_html=True)
-        render_equity_chart(v2_closed, PAPER_V2_STARTING)
-
-        st.markdown('<div class="section-header">🏆 Strategy Performance</div>', unsafe_allow_html=True)
-        render_strategy_cards(v2_closed)
-
-        st.markdown('<div class="section-header">📋 Trade History</div>', unsafe_allow_html=True)
-        render_trade_history(v2_closed)
-
 # ════════════════════════════════════════════
 # 🔄 PAPER v3 (INVERSE) TAB
 # ════════════════════════════════════════════
@@ -1077,6 +932,173 @@ with tab_paper_v31:
 
         st.markdown('<div class="section-header">📋 Trade History</div>', unsafe_allow_html=True)
         render_trade_history(v31_closed)
+
+# ─── PAPER v3.2 (INVERSE HTF) TAB ───
+PAPER_V32_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "paper_v3_2.db")
+PAPER_V32_STARTING = 100.0
+
+with tab_paper_v32:
+    is_v32_running = check_trader_running("paper_trader_v3_2")
+    now_pst = datetime.now(timezone.utc).astimezone(PST).strftime("%I:%M %p PST")
+
+    st.markdown(f"""
+    <div class="metric-card">
+        <span style="font-size:1.1rem;font-weight:600">Paper v3.2 (Inverse HTF) {'Running' if is_v32_running else 'Stopped'}</span>
+        <span style="color:#94a3b8;font-size:0.85rem"> | {now_pst}</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("🔄 **Hypothesis**: HTF Trend signals have info content but point wrong → flip everything")
+
+    if os.path.exists(PAPER_V32_DB):
+        try:
+            import sqlite3 as _sq
+            _conn = _sq.connect(PAPER_V32_DB)
+            v32_all = pd.read_sql("SELECT * FROM trades", _conn)
+            _conn.close()
+
+            if "timestamp" in v32_all.columns:
+                v32_all["time_pst"] = pd.to_datetime(v32_all["timestamp"], unit="s", utc=True).dt.tz_convert("US/Pacific")
+
+            v32_closed = v32_all[v32_all["status"] == "closed"] if "status" in v32_all.columns else v32_all
+
+            if v32_closed.empty:
+                st.info("🔄 Paper v3.2 running — waiting for trades to resolve...")
+            else:
+                total_pnl_v32 = v32_closed["pnl"].sum() if "pnl" in v32_closed.columns else 0
+                wins_v32 = len(v32_closed[v32_closed["pnl"] > 0]) if "pnl" in v32_closed.columns else 0
+                losses_v32 = len(v32_closed[v32_closed["pnl"] <= 0]) if "pnl" in v32_closed.columns else 0
+                wr_v32 = wins_v32 / len(v32_closed) * 100 if len(v32_closed) > 0 else 0
+                balance_v32 = PAPER_V32_STARTING + total_pnl_v32
+
+                col1, col2, col3, col4 = st.columns(4)
+                metrics = [
+                    (col1, "Balance", f"${balance_v32:,.2f}", "positive" if balance_v32 >= PAPER_V32_STARTING else "negative"),
+                    (col2, "P&L", f"${total_pnl_v32:+,.2f}", "win" if total_pnl_v32 >= 0 else "loss"),
+                    (col3, "Win Rate", f"{wr_v32:.1f}%", "win" if wr_v32 >= 52.5 else "loss"),
+                    (col4, "Trades", f"{wins_v32}W - {losses_v32}L", "neutral"),
+                ]
+                for c, label, val, _ in metrics:
+                    c.metric(label, val)
+
+                # Head-to-head vs v3.1
+                if os.path.exists(os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "paper_v3_1.db")):
+                    try:
+                        _conn31 = _sq.connect(os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "paper_v3_1.db"))
+                        v31_htf = pd.read_sql("SELECT * FROM trades WHERE strategy LIKE '%htf_trend%' AND status='closed'", _conn31)
+                        _conn31.close()
+                        if not v31_htf.empty:
+                            v31_pnl = v31_htf["pnl"].sum()
+                            v31_wr = len(v31_htf[v31_htf["pnl"] > 0]) / len(v31_htf) * 100
+                            st.markdown("### 🥊 Head-to-Head: v3.1 HTF vs v3.2 Inverse")
+                            h2h_col1, h2h_col2 = st.columns(2)
+                            with h2h_col1:
+                                st.markdown(f"**v3.1 HTF Trend** (original)")
+                                st.markdown(f"- WR: {v31_wr:.1f}% | P&L: ${v31_pnl:+.2f} | Trades: {len(v31_htf)}")
+                            with h2h_col2:
+                                st.markdown(f"**v3.2 Inverse HTF** (flipped)")
+                                st.markdown(f"- WR: {wr_v32:.1f}% | P&L: ${total_pnl_v32:+.2f} | Trades: {len(v32_closed)}")
+                    except:
+                        pass
+
+                st.markdown('<div class="section-header">📈 Paper v3.2 Equity Curve</div>', unsafe_allow_html=True)
+                render_equity_chart(v32_closed, PAPER_V32_STARTING)
+
+                st.markdown('<div class="section-header">📋 Trade History</div>', unsafe_allow_html=True)
+                render_trade_history(v32_closed)
+        except Exception as e:
+            st.warning(f"Paper v3.2 DB error: {e}")
+    else:
+        st.info("🔄 Paper Trader v3.2 not started yet — no database found.")
+
+# ─── PAPER v3.3 (TRUE MIRROR) TAB ───
+PAPER_V33_DB = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "paper_v3_3.db")
+PAPER_V33_STARTING = 100.0
+
+with tab_paper_v33:
+    is_v33_running = check_trader_running("paper_trader_v3_3")
+    now_pst = datetime.now(timezone.utc).astimezone(PST).strftime("%I:%M %p PST")
+
+    st.markdown(f"""
+    <div class="metric-card">
+        <span style="font-size:1.1rem;font-weight:600">Paper v3.3 (True Mirror) {'Running' if is_v33_running else 'Stopped'}</span>
+        <span style="color:#94a3b8;font-size:0.85rem"> | {now_pst}</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("🪞 **True mirror test**: reads v3.1's trades from DB and bets the EXACT opposite. Same markets, same timing, opposite direction.")
+
+    if os.path.exists(PAPER_V33_DB):
+        try:
+            import sqlite3 as _sq
+            _conn = _sq.connect(PAPER_V33_DB)
+            v33_all = pd.read_sql("SELECT * FROM trades", _conn)
+            _conn.close()
+
+            if "timestamp" in v33_all.columns:
+                v33_all["time_pst"] = pd.to_datetime(v33_all["timestamp"], unit="s", utc=True).dt.tz_convert("US/Pacific")
+
+            v33_closed = v33_all[v33_all["status"] == "closed"] if "status" in v33_all.columns else v33_all
+
+            if v33_closed.empty:
+                st.info("🪞 Paper v3.3 running — waiting for trades to resolve...")
+            else:
+                total_pnl_v33 = v33_closed["pnl"].sum() if "pnl" in v33_closed.columns else 0
+                wins_v33 = len(v33_closed[v33_closed["pnl"] > 0]) if "pnl" in v33_closed.columns else 0
+                losses_v33 = len(v33_closed[v33_closed["pnl"] <= 0]) if "pnl" in v33_closed.columns else 0
+                wr_v33 = wins_v33 / len(v33_closed) * 100 if len(v33_closed) > 0 else 0
+                balance_v33 = PAPER_V33_STARTING + total_pnl_v33
+
+                col1, col2, col3, col4 = st.columns(4)
+                metrics = [
+                    (col1, "Balance", f"${balance_v33:,.2f}", "positive" if balance_v33 >= PAPER_V33_STARTING else "negative"),
+                    (col2, "P&L", f"${total_pnl_v33:+,.2f}", "win" if total_pnl_v33 >= 0 else "loss"),
+                    (col3, "Win Rate", f"{wr_v33:.1f}%", "win" if wr_v33 >= 52.5 else "loss"),
+                    (col4, "Trades", f"{wins_v33}W - {losses_v33}L", "neutral"),
+                ]
+                for c, label, val, _ in metrics:
+                    c.metric(label, val)
+
+                # Head-to-head vs v3.1 (only matched trades)
+                if os.path.exists(os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "paper_v3_1.db")):
+                    try:
+                        _conn31 = _sq.connect(os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "paper_v3_1.db"))
+                        v31_htf = pd.read_sql("SELECT * FROM trades WHERE strategy LIKE '%htf_trend%' AND status='closed'", _conn31)
+                        _conn31.close()
+
+                        # Match by market_id
+                        if not v31_htf.empty and "market_id" in v33_closed.columns:
+                            v33_markets = set(v33_closed["market_id"].tolist())
+                            v31_matched = v31_htf[v31_htf["market_id"].isin(v33_markets)]
+                            v33_matched = v33_closed[v33_closed["market_id"].isin(set(v31_htf["market_id"].tolist()))]
+
+                            if not v31_matched.empty and not v33_matched.empty:
+                                v31_m_wr = len(v31_matched[v31_matched["pnl"] > 0]) / len(v31_matched) * 100
+                                v33_m_wr = len(v33_matched[v33_matched["pnl"] > 0]) / len(v33_matched) * 100
+                                v31_m_pnl = v31_matched["pnl"].sum()
+                                v33_m_pnl = v33_matched["pnl"].sum()
+
+                                st.markdown(f"### 🪞 Head-to-Head (matched markets only: {len(v33_matched)} trades)")
+                                h2h_col1, h2h_col2 = st.columns(2)
+                                with h2h_col1:
+                                    st.markdown(f"**v3.1 HTF Trend** (original)")
+                                    st.markdown(f"- WR: {v31_m_wr:.1f}% | P&L: ${v31_m_pnl:+.2f}")
+                                with h2h_col2:
+                                    st.markdown(f"**v3.3 Mirror** (inverted)")
+                                    st.markdown(f"- WR: {v33_m_wr:.1f}% | P&L: ${v33_m_pnl:+.2f}")
+                                st.markdown(f"*Combined WR: {(v31_m_wr + v33_m_wr)/2:.1f}% (should be ~50% for true mirror)*")
+                    except:
+                        pass
+
+                st.markdown('<div class="section-header">📈 Paper v3.3 Equity Curve</div>', unsafe_allow_html=True)
+                render_equity_chart(v33_closed, PAPER_V33_STARTING)
+
+                st.markdown('<div class="section-header">📋 Trade History</div>', unsafe_allow_html=True)
+                render_trade_history(v33_closed)
+        except Exception as e:
+            st.warning(f"Paper v3.3 DB error: {e}")
+    else:
+        st.info("🪞 Paper Trader v3.3 not started yet — no database found.")
 
 # ─── ML BRAIN TAB ───
 with tab_ml:
