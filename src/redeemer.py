@@ -243,13 +243,17 @@ class Redeemer:
             patched[192:224] = (0x80).to_bytes(32, 'big')
             calldata = FACTORY_PROXY_SELECTOR + bytes(patched)
 
-            # Get gas price with RPC fallback
-            gas_price = 50_000_000_000  # default 50 Gwei
+            # Get gas price with RPC fallback — use EIP-1559
+            max_fee = 200_000_000_000  # default 200 Gwei
+            max_priority = 50_000_000_000  # default 50 Gwei
             for rpc_url in POLYGON_RPCS:
                 try:
                     w3_tmp = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 8}))
-                    gas_price = int(max(w3_tmp.eth.gas_price * 1.25, 50_000_000_000))
-                    self.w3 = w3_tmp  # switch to working RPC
+                    base_fee = w3_tmp.eth.gas_price
+                    max_priority = max(int(base_fee * 0.3), 30_000_000_000)  # 30% tip or 30 Gwei
+                    max_fee = int(base_fee * 2) + max_priority  # 2x base + tip
+                    self.w3 = w3_tmp
+                    logger.info(f"[{self._ts()}] Gas: base={base_fee/1e9:.0f} maxFee={max_fee/1e9:.0f} tip={max_priority/1e9:.0f} Gwei")
                     break
                 except Exception:
                     continue
@@ -260,9 +264,11 @@ class Redeemer:
                 "data": calldata,
                 "nonce": self._get_nonce(),
                 "gas": 300_000,
-                "gasPrice": gas_price,
+                "maxFeePerGas": max_fee,
+                "maxPriorityFeePerGas": max_priority,
                 "chainId": 137,
                 "value": 0,
+                "type": 2,  # EIP-1559
             }
 
             # Sign and send (with RPC fallback)
@@ -286,7 +292,8 @@ class Redeemer:
             logger.info(f"[{self._ts()}] 📤 Redeem tx sent: {tx_hash_hex}")
 
             # Wait for receipt (up to 120s)
-            receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+            # Wait on the same RPC that accepted the tx, with longer timeout for gas spikes
+            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=180)
 
             self._record_redeem()
 
