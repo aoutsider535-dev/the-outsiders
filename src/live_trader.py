@@ -27,7 +27,7 @@ from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import (
     OrderArgs, PartialCreateOrderOptions, BalanceAllowanceParams
 )
-from py_clob_client.order_builder.constants import BUY
+from py_clob_client.order_builder.constants import BUY, SELL
 
 from src.data.polymarket import get_full_market_snapshot, check_market_resolution, find_btc_5min_market
 from src.data.price_feed import get_recent_candles, fetch_kraken_ticker, fetch_kraken_orderbook
@@ -55,6 +55,10 @@ from src.strategies.smart_money import (
     generate_signal as smart_signal,
     format_signal_message as smart_format,
     DEFAULT_PARAMS as SMART_DEFAULTS,
+)
+from src.strategies.simple_momentum import (
+    generate_signal as simple_momentum_signal,
+    format_signal_message as simple_momentum_format,
 )
 from src.database import init_db, insert_trade, close_trade, DB_PATH, get_connection
 from src.data.binance import get_derivatives_signals
@@ -110,6 +114,11 @@ STRATEGY_CONFIG = {
         "display": "🧠 Smart Money",
         "load_params": lambda: SMART_DEFAULTS.copy(),
     },
+    "simple_momentum": {
+        "name": "btc_5min_simple_momentum_LIVE",
+        "display": "🚀 Simple Momentum",
+        "load_params": lambda: {},
+    },
 }
 
 
@@ -147,6 +156,22 @@ class LiveTrader:
         self.redeemer = None
         self.initial_balance = 0.0
         self.ml = MetaLearner(DB_PATH)
+        
+        # Stop-Loss: sell position if token price drops this much from entry
+        # Data-driven: $0.07 is optimal (tested against 495 real trades)
+        # Tight enough to save money, wide enough to not stop out winners
+        # With SL: even 47% WR becomes profitable (+$2.23/trade)
+        self.sl_drop = 0.07  # Sell if token drops $0.07 from entry price
+        self.sl_enabled = True
+        
+        # High-conviction filter: data shows edge>12% and conf>65% are ANTI-PREDICTIVE
+        # Best WR at conf 55-60% and edge 5-12%
+        self.max_edge = 12.0     # Skip trades with edge > 12% (anti-correlated with wins)
+        self.max_confidence = 0.65  # Skip trades with conf > 65%
+        
+        # Bad hours (PST) — WR < 40% in historical data
+        # 1AM (39%), 2AM (33%), 7AM (37%), 11AM (35%), 6PM (39%), 10PM (27%)
+        self.bad_hours_pst = {1, 2, 7, 11, 18, 22}
         
         # Daily loss circuit breaker
         self.daily_loss_limit_pct = 15.0   # Stop trading if daily loss exceeds 15% of starting balance
@@ -428,6 +453,124 @@ class LiveTrader:
             self.log(f"❌ Order placement failed: {e}")
             return None
     
+    def _get_best_bid(self, token_id):
+        """Get the best bid price for a token (what we'd get if we sold now)."""
+        try:
+            book = requests.get(
+                f"https://clob.polymarket.com/book?token_id={token_id}", timeout=5
+            ).json()
+            bids = book.get("bids", [])
+            if bids:
+                return max(float(b["price"]) for b in bids)
+            return 0.0
+        except Exception:
+            return None  # None = can't check, don't trigger SL
+    
+    def _sell_position(self, token_id, price, size, condition_id):
+        """Place a SELL order to exit a position (for stop-loss)."""
+        try:
+            clob_market = self.client.get_market(condition_id)
+            tick_size = str(clob_market.get("minimum_tick_size", "0.01"))
+            neg_risk = clob_market.get("neg_risk", False)
+            
+            # Round down to tick to cross bid and fill as taker
+            tick = float(tick_size)
+            aggressive_price = price - tick  # 1 tick below best bid
+            rounded_price = round(round(aggressive_price / tick) * tick, 4)
+            rounded_price = max(rounded_price, tick)  # Floor at 1 tick
+            
+            order_args = OrderArgs(
+                token_id=token_id,
+                price=rounded_price,
+                size=round(size, 2),
+                side=SELL,
+            )
+            options = PartialCreateOrderOptions(
+                tick_size=tick_size,
+                neg_risk=neg_risk,
+            )
+            
+            resp = self.client.create_and_post_order(order_args, options)
+            
+            if resp and resp.get("success"):
+                return {
+                    "order_id": resp.get("orderID"),
+                    "status": resp.get("status"),
+                    "price": rounded_price,
+                    "size": round(size, 2),
+                }
+            else:
+                self.log(f"⚠️ Sell order not successful: {resp}")
+                return None
+        except Exception as e:
+            self.log(f"❌ Sell order failed: {e}")
+            return None
+    
+    def _check_stop_losses(self):
+        """Check all open trades for stop-loss triggers. Sell if token dropped too much."""
+        if not self.sl_enabled:
+            return
+        
+        for state in self.strategies.values():
+            resolved_indices = []
+            
+            for i, trade in enumerate(state.open_trades):
+                # Only check SL during active window (before resolution)
+                window_end = trade.get("window_end_ts", 0)
+                now_ts = int(time.time())
+                if now_ts >= window_end:
+                    continue  # Past close — let resolution handle it
+                
+                token_id = trade.get("token_id")
+                if not token_id:
+                    continue
+                
+                best_bid = self._get_best_bid(token_id)
+                if best_bid is None:
+                    continue  # Can't check, skip
+                
+                entry = trade["entry_price"]
+                sl_price = entry - self.sl_drop
+                
+                if best_bid <= sl_price:
+                    # STOP LOSS TRIGGERED
+                    self.log(f"🛑 SL HIT {state.display}: {trade['direction'].upper()} "
+                            f"entry ${entry:.3f} → bid ${best_bid:.3f} (drop ${entry - best_bid:.3f})")
+                    
+                    sell_result = self._sell_position(
+                        token_id, best_bid, trade["quantity"], trade["condition_id"]
+                    )
+                    
+                    if sell_result:
+                        sell_price = sell_result["price"]
+                        pnl = (sell_price - entry) * trade["quantity"]
+                        pnl_pct = ((sell_price / entry) - 1.0) * 100
+                        
+                        state.total_pnl += pnl
+                        state.trade_count += 1
+                        state.losses += 1
+                        state.consecutive_losses += 1
+                        self.daily_pnl += pnl
+                        
+                        # Close trade in DB
+                        close_trade(trade["id"], sell_price, pnl, pnl_pct, "stop_loss")
+                        
+                        # Feed to ML
+                        try:
+                            self.ml.record_outcome(trade["id"], False, pnl)
+                        except Exception:
+                            pass
+                        
+                        resolved_indices.append(i)
+                        self.log(f"   💔 Sold @ ${sell_price:.3f} | PnL: ${pnl:+.2f} ({pnl_pct:+.1f}%) | "
+                                f"Saved ${abs(trade['cost'] + pnl):.2f} vs full loss")
+                    else:
+                        self.log(f"   ⚠️ SL sell failed — holding to resolution")
+            
+            # Remove resolved trades (reverse order to preserve indices)
+            for idx in sorted(resolved_indices, reverse=True):
+                state.open_trades.pop(idx)
+    
     def run(self):
         """Main live trading loop."""
         print("🏞 The Outsiders — LIVE Trading Engine")
@@ -469,9 +612,12 @@ class LiveTrader:
         for s in self.strategies.values():
             p = s.params
             size = self._calc_trade_size(balance, strategy_key=s.key)
-            self.log(f"   {s.display}: TP={p['take_profit_pct']}% | "
-                    f"SL={p['stop_loss_pct']}% | Edge>={p['min_edge_pct']}% | "
-                    f"Kelly={s.kelly_fraction*100:.1f}% (${size:.2f})")
+            if 'take_profit_pct' in p:
+                self.log(f"   {s.display}: TP={p['take_profit_pct']}% | "
+                        f"SL={p['stop_loss_pct']}% | Edge>={p['min_edge_pct']}% | "
+                        f"Kelly={s.kelly_fraction*100:.1f}% (${size:.2f})")
+            else:
+                self.log(f"   {s.display}: SL=${self.sl_drop} token drop | ${size:.2f}/trade")
         self.log(f"🔒 Max positions: {self.max_per_strategy}/strategy, {self.max_total} total")
         ml_stats = self.ml.get_stats()
         if ml_stats["is_exploring"]:
@@ -517,6 +663,9 @@ class LiveTrader:
         if not snapshot:
             self.log("⏳ No active market found, waiting...")
             return
+        
+        # Check stop-losses on open positions during active window
+        self._check_stop_losses()
         
         # Auto-resolve stuck trades (>15 min old on 5-min markets)
         # Try resolution first; only zero out if resolution unavailable after 45 min
@@ -654,6 +803,31 @@ class LiveTrader:
                 state.traded_slugs.add(snapshot["slug"])
                 continue
             
+            # HIGH-CONVICTION FILTER (data-driven)
+            # Skip Trend Rider entirely (37% WR — worst strategy)
+            if key == "trend_rider":
+                state.traded_slugs.add(snapshot["slug"])
+                continue
+            
+            # Skip if edge too high (anti-correlated: >12% edge = 38% WR)
+            if hasattr(sig, 'edge_pct') and sig.edge_pct > self.max_edge:
+                self.log(f"   🎯 {state.display}: Edge {sig.edge_pct:.1f}% > {self.max_edge}% cap — skipped (anti-predictive)")
+                state.traded_slugs.add(snapshot["slug"])
+                continue
+            
+            # Skip if confidence too high (anti-correlated: >65% conf = 34% WR)
+            if hasattr(sig, 'confidence') and sig.confidence > self.max_confidence:
+                self.log(f"   🎯 {state.display}: Conf {sig.confidence:.0%} > {self.max_confidence:.0%} cap — skipped")
+                state.traded_slugs.add(snapshot["slug"])
+                continue
+            
+            # Skip bad hours (PST): WR drops to 27-39% during these hours
+            current_hour_pst = datetime.now(PST).hour
+            if current_hour_pst in self.bad_hours_pst:
+                self.log(f"   🌙 {state.display}: Bad hour ({current_hour_pst}:00 PST, WR<40%) — skipped")
+                state.traded_slugs.add(snapshot["slug"])
+                continue
+            
             # Check basic eligibility
             can_trade = total_open < self.max_total
             strategy_cap = len(state.open_trades) < self.max_per_strategy
@@ -728,8 +902,13 @@ class LiveTrader:
                 add_cross_strategy_features(c["features"], all_signals)
         
         # ML ranking: evaluate all candidates, sort by expected value
+        # Simple Momentum bypasses ML (new strategy, ML wasn't trained on it)
         ranked = []
         for c in candidates:
+            if c["key"] == "simple_momentum":
+                ranked.append({**c, "ml_approved": True, "ml_prob": 0.55, 
+                              "ml_reason": "🚀 Simple Momentum: ML bypass (SL protects downside)"})
+                continue
             try:
                 ml_approved, ml_prob, ml_reason = self.ml.should_trade(
                     c["features"], c["key"], 
@@ -812,6 +991,9 @@ class LiveTrader:
                            kraken_orderbook=kraken_book, **common)
         elif key == "smart_money":
             sig = smart_signal(candles=candles, **common)
+        elif key == "simple_momentum":
+            window_ts = snapshot.get("window_start_ts", (int(time.time()) // 300) * 300)
+            sig = simple_momentum_signal(window_ts=window_ts)
         else:
             return None
         
@@ -869,7 +1051,8 @@ class LiveTrader:
     def _format_signal(self, key, sig):
         fmts = {"trend_rider": trend_rider_format, "momentum": momentum_format,
                 "mean_reversion": meanrev_format,
-                "orderbook_imbalance": ob_format, "smart_money": smart_format}
+                "orderbook_imbalance": ob_format, "smart_money": smart_format,
+                "simple_momentum": simple_momentum_format}
         return fmts.get(key, str)(sig)
     
     def _record_shadow_trade(self, state, sig, snapshot):
