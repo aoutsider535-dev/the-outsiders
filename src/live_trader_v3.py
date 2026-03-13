@@ -61,8 +61,8 @@ ASSETS = ["btc", "eth"]  # v3 handles BTC+ETH, v2 handles SOL+XRP
 
 # ── Scalping Config ──
 TRADE_SIZE = 5.0            # USD per trade
-TP_GAIN = 0.15              # Take profit: sell when bid >= entry + $0.15
-SL_DROP = 0.03              # Stop loss: sell when bid <= entry - $0.03
+TP_PCT = 0.20               # Take profit: sell when bid >= entry * 1.20 (20% gain)
+SL_PCT = 0.10               # Stop loss: sell when bid <= entry * 0.90 (10% drop)
 MAX_CONCURRENT = 8          # Max open positions
 CHECK_INTERVAL = 5          # Check positions every 5 seconds
 
@@ -582,41 +582,38 @@ class ScalperV3:
                 continue
             
             entry = trade["entry_price"]
-            gain = bid - entry
+            gain_pct = (bid - entry) / entry if entry > 0 else 0
             
-            # ── GRADUATED EXIT STRATEGY ──
+            # ── GRADUATED EXIT STRATEGY (percentage-based) ──
             
-            # Phase 1: Normal scalping (>2 min to close)
-            if secs_to_close > 120:
-                if gain >= TP_GAIN:
-                    # Take profit
-                    self.log(f"💰 TP: {trade['asset'].upper()} {trade['direction'].upper()} | "
-                            f"Entry ${entry:.3f} → Bid ${bid:.3f} (+${gain:.3f})")
-                    if self._sell_position(trade, bid, "scalp_tp"):
-                        resolved.append(i)
-                        continue
-                
-                if gain <= -SL_DROP:
-                    # Stop loss
+            # TP ALWAYS CHECKS FIRST — regardless of time remaining
+            if gain_pct >= TP_PCT:
+                self.log(f"💰 TP: {trade['asset'].upper()} {trade['direction'].upper()} | "
+                        f"Entry ${entry:.3f} → Bid ${bid:.3f} (+{gain_pct*100:.0f}%)")
+                if self._sell_position(trade, bid, "scalp_tp"):
+                    resolved.append(i)
+                    continue
+            
+            # Phase 1: Normal trading (>90s to close) — only SL
+            if secs_to_close > 90:
+                if gain_pct <= -SL_PCT:
                     self.log(f"🛑 SL: {trade['asset'].upper()} {trade['direction'].upper()} | "
-                            f"Entry ${entry:.3f} → Bid ${bid:.3f} (${gain:+.3f})")
+                            f"Entry ${entry:.3f} → Bid ${bid:.3f} ({gain_pct*100:+.0f}%)")
                     if self._sell_position(trade, bid, "scalp_sl"):
                         resolved.append(i)
                         continue
             
-            # Phase 2: Breakeven mode (1-2 min to close)
+            # Phase 2: Breakeven mode (60-90s to close)
             elif secs_to_close > 60:
-                if gain >= 0:
-                    # Sell at breakeven or better
+                if gain_pct >= 0:
                     self.log(f"⏰ T-{secs_to_close}s: {trade['asset'].upper()} {trade['direction'].upper()} | "
-                            f"Selling at breakeven+ (bid ${bid:.3f}, entry ${entry:.3f})")
+                            f"Selling at breakeven+ (bid ${bid:.3f}, entry ${entry:.3f}, +{gain_pct*100:.0f}%)")
                     if self._sell_position(trade, bid, "breakeven_exit"):
                         resolved.append(i)
                         continue
                 
-                if gain <= -SL_DROP:
-                    # Still honor SL
-                    self.log(f"🛑 SL (urgent): {trade['asset'].upper()} | ${gain:+.3f}")
+                if gain_pct <= -SL_PCT:
+                    self.log(f"🛑 SL (urgent): {trade['asset'].upper()} | {gain_pct*100:+.0f}%")
                     if self._sell_position(trade, bid, "urgent_sl"):
                         resolved.append(i)
                         continue
@@ -625,7 +622,7 @@ class ScalperV3:
             elif secs_to_close > 15:
                 if bid >= 0.02:
                     self.log(f"🔥 T-{secs_to_close}s: {trade['asset'].upper()} {trade['direction'].upper()} | "
-                            f"Fire sale @ ${bid:.3f} (entry ${entry:.3f}, PnL ${gain:+.3f})")
+                            f"Fire sale @ ${bid:.3f} (entry ${entry:.3f}, {gain_pct*100:+.0f}%)")
                     if self._sell_position(trade, bid, "fire_sale"):
                         resolved.append(i)
                         continue
@@ -840,7 +837,7 @@ class ScalperV3:
         print("🏞 The Outsiders v3 — The Scalper")
         print("=" * 60)
         print(f"💰 LIVE MODE | Trade size: ${TRADE_SIZE}")
-        print(f"⚡ TP: +${TP_GAIN} | SL: -${SL_DROP} | Check every {CHECK_INTERVAL}s")
+        print(f"⚡ TP: +{TP_PCT*100:.0f}% | SL: -{SL_PCT*100:.0f}% | Check every {CHECK_INTERVAL}s")
         print(f"📊 Assets: {', '.join(a.upper() for a in ASSETS)}")
         print(f"🎯 Graduated exits: TP/SL → Breakeven → Fire sale → Emergency")
         print(f"🚫 NO EXPIRIES — every position sold before close")
