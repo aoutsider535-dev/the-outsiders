@@ -57,6 +57,29 @@ class EdgeDetector:
     
     def __init__(self):
         self.bankroll = INITIAL_BANKROLL
+        
+        # Initialize edge source plugins
+        self.sports_edge = None
+        self.news_edge = None
+        self.whale_edge = None
+        
+        try:
+            from .edges.sports import SportsEdge
+            self.sports_edge = SportsEdge()
+        except Exception as e:
+            print(f"Sports edge not loaded: {e}")
+        
+        try:
+            from .edges.news import NewsEdge
+            self.news_edge = NewsEdge()
+        except Exception as e:
+            print(f"News edge not loaded: {e}")
+        
+        try:
+            from .edges.whales import WhaleEdge
+            self.whale_edge = WhaleEdge()
+        except Exception as e:
+            print(f"Whale edge not loaded: {e}")
     
     def evaluate(self, market: MarketOpportunity) -> Optional[EdgeSignal]:
         """
@@ -76,10 +99,36 @@ class EdgeDetector:
         if base_rate:
             estimates.append(base_rate)
         
-        # Method 3: News sentiment (placeholder — needs API key)
-        # news = self._check_news_sentiment(market)
-        # if news:
-        #     estimates.append(news)
+        # Method 3: Sports statistical model
+        if self.sports_edge:
+            try:
+                sports = self.sports_edge.analyze_market(
+                    market.question, market.outcomes, market.prices)
+                if sports and sports.get("probability"):
+                    estimates.append(sports)
+            except:
+                pass
+        
+        # Method 4: News sentiment
+        if self.news_edge:
+            try:
+                news = self.news_edge.analyze_market(
+                    market.question, market.outcomes, market.prices, market.slug)
+                if news and news.get("probability"):
+                    estimates.append(news)
+            except:
+                pass
+        
+        # Method 5: Whale copy trading
+        if self.whale_edge:
+            try:
+                whale = self.whale_edge.analyze_market(
+                    market.question, market.outcomes, market.prices,
+                    market.slug, market.condition_id)
+                if whale and whale.get("probability"):
+                    estimates.append(whale)
+            except:
+                pass
         
         if not estimates:
             return None
