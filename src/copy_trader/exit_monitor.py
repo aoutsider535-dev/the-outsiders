@@ -111,61 +111,51 @@ class ExitMonitor:
         return None
 
     def _check_resolution(self, pos: dict) -> dict | None:
-        """Check if the market has resolved."""
+        """Check if the market has resolved via CLOB API."""
         condition_id = pos['condition_id']
         try:
             r = self.session.get(
-                "https://gamma-api.polymarket.com/markets",
-                params={"condition_id": condition_id, "limit": 1},
+                f"https://clob.polymarket.com/markets/{condition_id}",
                 timeout=5,
             )
             if r.status_code != 200:
                 return None
 
-            markets = r.json()
-            if not markets:
+            market = r.json()
+
+            # CLOB: closed=True means no more trading
+            if not market.get('closed', False):
                 return None
 
-            market = markets[0]
-            
-            # Check if resolved
-            resolved = market.get('resolved', False)
-            if not resolved:
+            # If closed and not accepting orders, check if it's resolved
+            # For resolved markets, token prices go to 1.0 or 0.0
+            tokens = market.get('tokens', [])
+            if not tokens:
                 return None
 
-            # Determine if we won
-            outcome = market.get('outcome', '')
-            outcome_prices = market.get('outcomePrices', '')
-            
-            # Parse outcome prices (typically "[1, 0]" or "[0, 1]")
-            try:
-                if isinstance(outcome_prices, str):
-                    import json
-                    prices = json.loads(outcome_prices)
-                else:
-                    prices = outcome_prices
-            except:
-                prices = []
+            # Check if any token has price = 1.0 (winner determined)
+            for token in tokens:
+                token_price = float(token.get('price', 0) or 0)
+                token_id = token.get('token_id', '')
+                outcome = token.get('outcome', '')
 
-            # Determine win/loss based on our side and resolution
-            # This is simplified — real implementation needs token_id matching
-            side = pos.get('side', '')
-            if outcome.lower() in ('yes', 'true', '1'):
-                won = (side.upper() in ('YES', 'BUY'))
-            elif outcome.lower() in ('no', 'false', '0'):
-                won = (side.upper() in ('NO',))
-            else:
-                # Try using prices
-                won = None
-
-            if won is not None:
-                exit_price = 1.0 if won else 0.0
-                return {
-                    'reason': 'resolution',
-                    'exit_price': exit_price,
-                    'details': f"Market resolved: {outcome}. {'WON' if won else 'LOST'}",
-                    'won': won,
-                }
+                if token_price >= 0.99:  # This token won
+                    # Did we hold this token?
+                    our_token = pos.get('token_id', '')
+                    if our_token == token_id:
+                        return {
+                            'reason': 'resolution',
+                            'exit_price': 1.0,
+                            'details': f"Market resolved: {outcome} won",
+                            'won': True,
+                        }
+                    else:
+                        return {
+                            'reason': 'resolution',
+                            'exit_price': 0.0,
+                            'details': f"Market resolved: {outcome} won (we held other side)",
+                            'won': False,
+                        }
 
         except Exception as e:
             log.debug(f"Resolution check error for {condition_id[:16]}: {e}")
@@ -196,8 +186,8 @@ class ExitMonitor:
         return None
 
     def _get_current_price(self, condition_id: str, token_id: str = None) -> float | None:
-        """Get current token price from Polymarket."""
-        cache_key = condition_id
+        """Get current token price from CLOB API."""
+        cache_key = f"{condition_id}:{token_id or ''}"
         now = time.time()
 
         # Cache for 30 seconds
@@ -208,39 +198,25 @@ class ExitMonitor:
 
         try:
             r = self.session.get(
-                "https://gamma-api.polymarket.com/markets",
-                params={"condition_id": condition_id, "limit": 1},
+                f"https://clob.polymarket.com/markets/{condition_id}",
                 timeout=5,
             )
             if r.status_code != 200:
                 return None
 
-            markets = r.json()
-            if not markets:
-                return None
+            market = r.json()
+            tokens = market.get('tokens', [])
 
-            market = markets[0]
-            
-            # Get current price
-            outcome_prices = market.get('outcomePrices', '')
-            try:
-                if isinstance(outcome_prices, str):
-                    import json
-                    prices = json.loads(outcome_prices)
-                else:
-                    prices = outcome_prices
-                
-                if prices:
-                    price = float(prices[0])  # YES price
+            for token in tokens:
+                tid = token.get('token_id', '')
+                price = float(token.get('price', 0) or 0)
+                if token_id and tid == token_id:
                     self.price_cache[cache_key] = (price, now)
                     return price
-            except:
-                pass
 
-            # Fallback to bestAsk
-            best_ask = market.get('bestAsk', None)
-            if best_ask:
-                price = float(best_ask)
+            # If no token_id match, return first token price
+            if tokens:
+                price = float(tokens[0].get('price', 0) or 0)
                 self.price_cache[cache_key] = (price, now)
                 return price
 

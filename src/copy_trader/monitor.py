@@ -56,24 +56,36 @@ class LeaderMonitor:
             return []
 
     def _get_market_info(self, condition_id: str) -> dict:
-        """Fetch market details (cached)."""
+        """Fetch market details (cached). Uses CLOB API (gamma API is unreliable)."""
         if condition_id in self.market_cache:
             return self.market_cache[condition_id]
 
         try:
+            # CLOB API is authoritative — gamma API returns wrong markets
             r = self.session.get(
-                "https://gamma-api.polymarket.com/markets",
-                params={"condition_id": condition_id, "limit": 1},
+                f"https://clob.polymarket.com/markets/{condition_id}",
                 timeout=5,
             )
             if r.status_code == 200:
-                markets = r.json()
-                if markets:
-                    info = markets[0]
-                    self.market_cache[condition_id] = info
-                    return info
+                data = r.json()
+                info = {
+                    'question': data.get('question', data.get('description', '')),
+                    'active': data.get('active', False),
+                    'closed': data.get('closed', False),
+                    'endDate': data.get('end_date_iso', data.get('game_start_time', '')),
+                    'category': data.get('market_type', data.get('category', '')),
+                    'tokens': data.get('tokens', []),
+                    'condition_id': condition_id,
+                    'accepting_orders': data.get('accepting_orders', False),
+                    'minimum_order_size': data.get('minimum_order_size', 0),
+                    # Volume/liquidity not in CLOB, leave as 0
+                    'volume': 0,
+                    'liquidity': 0,
+                }
+                self.market_cache[condition_id] = info
+                return info
         except Exception as e:
-            log.warning(f"Market lookup failed for {condition_id[:16]}: {e}")
+            log.warning(f"CLOB market lookup failed for {condition_id[:16]}: {e}")
 
         return {}
 
@@ -121,10 +133,17 @@ class LeaderMonitor:
 
         shares = trade_size / price
         condition_id = trade_data.get('conditionId', '')
-        asset_id = trade_data.get('asset', '')
+        asset_id = trade_data.get('asset', '')  # This is the token_id the leader bought
         side = trade_data.get('side', 'BUY')
         question = market_info.get('question', '')[:80]
         category = market_info.get('category', '')
+        
+        # Map asset to outcome (Yes/No/Over/Under) using market tokens
+        outcome_side = side
+        for token in market_info.get('tokens', []):
+            if token.get('token_id', '') == asset_id:
+                outcome_side = token.get('outcome', side)
+                break
 
         pos_id = self.db.open_position(
             leader_trade_id=leader_trade_id,
@@ -134,7 +153,7 @@ class LeaderMonitor:
             token_id=asset_id,
             market_question=question,
             market_category=category,
-            side=side,
+            side=outcome_side,
             entry_price=price,
             shares=shares,
             usdc_size=trade_size,

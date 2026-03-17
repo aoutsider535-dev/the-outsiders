@@ -60,7 +60,7 @@ LEADERS = {
 
 # Timing
 REVERT_TRADE = False                # False = only copy BUYs, skip SELLs
-ENTRY_TRADE_SEC = 30                # Skip if leader's trade is older than N seconds
+ENTRY_TRADE_SEC = 300               # Skip if leader's trade is older than 5 minutes
 TRADE_SEC_FROM_RESOLVE = 300        # Skip if market ends within N seconds (5 min)
 MIN_MARKET_AGE_SEC = 600            # Skip if market opened < N seconds ago (10 min)
 
@@ -73,8 +73,8 @@ SLIPPAGE_TOLERANCE = 0.03           # Max 3% slippage vs leader's fill price
 MIN_LEADER_TRADE_SIZE = 10.0        # Ignore leader trades < $10 (noise/test trades)
 
 # Market quality
-MIN_MARKET_LIQUIDITY = 1000.0       # Skip if market has < $X total liquidity
-MIN_MARKET_VOLUME = 5000.0          # Skip if market has < $X total volume
+MIN_MARKET_LIQUIDITY = 0             # Disabled — CLOB API doesn't expose liquidity
+MIN_MARKET_VOLUME = 0                # Disabled — CLOB API doesn't expose volume
 
 # Leader conviction
 LEADER_CONVICTION_PCT = 0.0         # Only copy if leader puts > X% of portfolio in trade (0 = disabled)
@@ -144,7 +144,7 @@ LEADER_CORRELATION_CHECK = True     # Detect if two leaders copy each other
 # OPERATIONAL
 # ═══════════════════════════════════════════════════════════
 
-POLL_INTERVAL_SEC = 5               # How often to check leader activity
+POLL_INTERVAL_SEC = 3               # How often to check leader activity
 TX_CONFIRMATION = True              # Wait for on-chain confirmation
 RETRY_COUNT = 3                     # Retry failed orders N times
 RETRY_DELAY_SEC = 2                 # Delay between retries

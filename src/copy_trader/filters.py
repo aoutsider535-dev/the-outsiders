@@ -104,23 +104,30 @@ class FilterPipeline:
     def _filter_market_resolve_time(self, leader_address, leader_name, trade, market):
         end_date = market.get('endDate', '')
         if not end_date:
-            return FilterResult(True, "no_end_date")  # Some markets don't have end dates
+            return FilterResult(True, "no_end_date")  # Many markets don't expose end dates
 
         try:
             from datetime import datetime
             if isinstance(end_date, str):
-                # Try ISO format
+                if not end_date.strip():
+                    return FilterResult(True, "empty_end_date")
                 end_ts = datetime.fromisoformat(end_date.replace('Z', '+00:00')).timestamp()
             else:
                 end_ts = float(end_date)
 
             time_to_resolve = end_ts - time.time()
-            if time_to_resolve < config.TRADE_SEC_FROM_RESOLVE:
+            
+            # If end date is in the past (already resolved/expired), skip
+            if time_to_resolve < -86400:  # More than 1 day past
+                return FilterResult(False, "market_expired",
+                                    {"sec_past": -time_to_resolve})
+            
+            if 0 < time_to_resolve < config.TRADE_SEC_FROM_RESOLVE:
                 return FilterResult(False, "too_close_to_resolve",
                                     {"sec_to_resolve": time_to_resolve,
                                      "min_required": config.TRADE_SEC_FROM_RESOLVE})
         except (ValueError, TypeError):
-            pass
+            pass  # Can't parse date, allow the trade
 
         return FilterResult(True, "resolve_time_ok")
 
