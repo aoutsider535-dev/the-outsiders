@@ -243,17 +243,21 @@ class LeaderMonitor:
         log.info(f"{'='*60}")
 
         # Seed last_seen so we don't copy old trades on first run
-        log.info("Seeding last_seen timestamps (ignoring historical trades)...")
+        # Use current time as baseline — only trades AFTER bot start get processed
+        now = int(time.time())
+        log.info("Seeding last_seen timestamps (only new trades after bot start)...")
         for address, cfg in config.LEADERS.items():
             if not cfg.get('enabled'):
                 continue
+            self.last_seen[address] = now
             trades = self._get_leader_activity(address, limit=5)
+            name = cfg.get('name', address[:10])
             if trades:
                 max_ts = max(t.get('timestamp', 0) for t in trades)
-                self.last_seen[address] = max_ts
-                name = cfg.get('name', address[:10])
                 dt = datetime.fromtimestamp(max_ts, tz=timezone.utc)
-                log.info(f"  {name}: last trade {dt.strftime('%m/%d %H:%M UTC')}")
+                log.info(f"  {name}: last trade {dt.strftime('%m/%d %H:%M UTC')} (ignoring)")
+            else:
+                log.info(f"  {name}: no recent trades")
             time.sleep(0.5)  # Rate limiting
 
         log.info(f"\n✅ Monitoring started. Waiting for new leader trades...\n")
