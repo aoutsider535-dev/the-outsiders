@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from . import config
 from .database import CopyTraderDB
 from .filters import FilterPipeline
+from .exit_monitor import ExitMonitor
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,6 +24,7 @@ class LeaderMonitor:
     def __init__(self, db: CopyTraderDB = None):
         self.db = db or CopyTraderDB(config.DB_PATH)
         self.filters = FilterPipeline(self.db)
+        self.exit_monitor = ExitMonitor(self.db)
         self.last_seen = {}  # leader_address -> latest timestamp seen
         self.market_cache = {}  # condition_id -> market info
         self.session = requests.Session()
@@ -269,11 +271,15 @@ class LeaderMonitor:
 
         while self.running:
             try:
+                # Check leaders for new trades
                 for address in config.LEADERS:
                     if not self.running:
                         break
                     self.process_leader(address)
                     time.sleep(0.5)  # Rate limit between leaders
+
+                # Check open positions for exit signals
+                self.exit_monitor.check_all_positions()
 
                 time.sleep(config.POLL_INTERVAL_SEC)
 

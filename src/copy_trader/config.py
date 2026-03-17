@@ -125,11 +125,11 @@ MAX_DRAWDOWN = 50.0                 # Kill switch — stop if total drawdown exc
 # EXIT FILTERS — When do we get out?
 # ═══════════════════════════════════════════════════════════
 
-COPY_LEADER_EXIT = False            # If leader sells, follow? (requires revert_trade awareness)
+COPY_LEADER_EXIT = True             # If leader sells, we exit too
 COPY_LEADER_EXIT_DELAY_SEC = 10     # Delay before copying leader's exit (avoid front-running)
 STOP_LOSS_PCT = 0.0                 # Our own SL (0 = disabled, hold to resolution)
 TAKE_PROFIT_PCT = 0.0               # Our own TP (0 = disabled, hold to resolution)
-MAX_HOLD_TIME_DAYS = 0              # Force exit after N days (0 = disabled, hold to resolution)
+MAX_HOLD_TIME_DAYS = 30             # Force exit after 30 days (safety net for long-term markets)
 TRAILING_STOP_PCT = 0.0             # Trailing SL (0 = disabled)
 
 # ═══════════════════════════════════════════════════════════
