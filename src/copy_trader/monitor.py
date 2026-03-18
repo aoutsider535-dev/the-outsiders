@@ -213,6 +213,9 @@ class LeaderMonitor:
             # Update leader stats (trade seen)
             self.db.update_leader_stats(address, leader_name)
 
+            # Always record the trade (even SELLs) so exit monitor can detect leader exits
+            # The filter pipeline will decide whether to COPY it as a new position
+
             # Run through filters
             result = self.filters.evaluate(address, leader_name, trade, market_info)
 

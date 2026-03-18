@@ -66,7 +66,7 @@ MIN_MARKET_AGE_SEC = 600            # Skip if market opened < N seconds ago (10 
 
 # Price
 MAX_ENTRY_PRICE = 0.95              # Don't buy tokens above this (too little upside)
-MIN_ENTRY_PRICE = 0.05              # Don't buy tokens below this (lottery tickets)
+MIN_ENTRY_PRICE = 0.25              # Don't buy tokens below this (longshots lose)
 SLIPPAGE_TOLERANCE = 0.03           # Max 3% slippage vs leader's fill price
 
 # Leader trade size

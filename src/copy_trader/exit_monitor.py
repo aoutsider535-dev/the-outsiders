@@ -14,6 +14,7 @@ import requests
 from datetime import datetime, timezone
 from . import config
 from .database import CopyTraderDB
+from .market_rules import classify_market, get_entry_rules
 
 log = logging.getLogger("copy_trader")
 
@@ -49,8 +50,12 @@ class ExitMonitor:
         if resolution:
             return resolution
 
-        # 2. Check if leader exited
-        if config.COPY_LEADER_EXIT:
+        # 2. Check if leader exited — always on for crypto, configurable for others
+        market_type = classify_market(pos.get('market_question', ''))
+        rules = get_entry_rules(market_type)
+        should_copy_exit = rules.get('copy_leader_exit', config.COPY_LEADER_EXIT)
+
+        if should_copy_exit:
             leader_exit = self._check_leader_exit(pos)
             if leader_exit:
                 return leader_exit

@@ -6,6 +6,7 @@ Trade must pass ALL filters to be copied.
 import time
 from . import config
 from .database import CopyTraderDB
+from .market_rules import classify_market, parse_market_window, get_entry_rules
 
 
 class FilterResult:
@@ -36,6 +37,7 @@ class FilterPipeline:
             self._filter_leader_paused,
             self._filter_trade_side,
             self._filter_trade_age,
+            self._filter_crypto_entry_window,
             self._filter_market_resolve_time,
             self._filter_market_age,
             self._filter_entry_price,
@@ -64,6 +66,43 @@ class FilterPipeline:
                 return result
 
         return FilterResult(True, "passed_all_filters")
+
+    # ─── Crypto Entry Window ───────────────────────────
+
+    def _filter_crypto_entry_window(self, leader_address, leader_name, trade, market):
+        """For crypto markets: only copy if trade is within first 2 minutes of window."""
+        question = market.get('question', '')
+        market_type = classify_market(question, market)
+
+        if not market_type.startswith('crypto_'):
+            return FilterResult(True, "not_crypto", {"market_type": market_type})
+
+        rules = get_entry_rules(market_type)
+        max_entry_sec = rules.get('max_entry_sec')
+        if max_entry_sec is None:
+            return FilterResult(True, "no_entry_limit")
+
+        # Parse window start time
+        window_start, window_end = parse_market_window(question)
+        if window_start is None:
+            return FilterResult(True, "cant_parse_window")  # Allow if we can't parse
+
+        trade_ts = trade.get('timestamp', 0)
+        secs_into_window = trade_ts - window_start
+
+        if secs_into_window < 0:
+            return FilterResult(False, "crypto_before_window",
+                                {"secs_before": -secs_into_window})
+
+        if secs_into_window > max_entry_sec:
+            return FilterResult(False, "crypto_entry_too_late",
+                                {"secs_into_window": secs_into_window,
+                                 "max_sec": max_entry_sec,
+                                 "market_type": market_type})
+
+        return FilterResult(True, "crypto_entry_ok",
+                            {"secs_into_window": secs_into_window,
+                             "market_type": market_type})
 
     # ─── Timing Filters ────────────────────────────────
 
