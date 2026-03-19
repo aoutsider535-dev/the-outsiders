@@ -8,6 +8,7 @@ Watches for exit signals on open positions:
   5. Max hold time
   6. Market resolution
 """
+import os
 import time
 import logging
 import requests
@@ -23,6 +24,7 @@ class ExitMonitor:
     def __init__(self, db: CopyTraderDB, executor=None):
         self.db = db
         self.executor = executor  # Set by monitor when live
+        self.redeemer = None     # Set by monitor when live
         self.session = requests.Session()
         self.price_cache = {}  # condition_id -> (price, timestamp)
         self.peak_prices = {}  # position_id -> highest price seen (for trailing stop)
@@ -257,15 +259,22 @@ class ExitMonitor:
             else:
                 log.warning(f"  ⚠️ SELL FAILED — keeping position open")
                 return None  # Don't close if sell failed
+        elif not is_paper and exit_reason == 'resolution' and exit_signal.get('won'):
+            # Live win — auto-redeem on-chain
+            pnl = shares * 1.0 - usdc_size
+            self._auto_redeem(pos)
+        elif not is_paper and exit_reason == 'resolution' and not exit_signal.get('won'):
+            # Live loss — try to burn the dead tokens
+            pnl = -usdc_size
+            self._auto_redeem(pos)  # Redeem burns losers too, returns $0
         else:
-            # Paper mode or resolution — calculate P&L
+            # Paper mode — calculate P&L
             if exit_reason == 'resolution':
                 if exit_signal.get('won'):
-                    pnl = shares * 1.0 - usdc_size  # Won: shares resolve to $1 each
+                    pnl = shares * 1.0 - usdc_size
                 else:
-                    pnl = -usdc_size  # Lost: shares worth $0
+                    pnl = -usdc_size
             else:
-                # Paper selling on secondary market
                 proceeds = shares * exit_price * (1 - 0.02)  # 2% taker fee estimate
                 pnl = proceeds - usdc_size
 
@@ -302,6 +311,40 @@ class ExitMonitor:
             )
 
         return pnl
+
+    def _auto_redeem(self, pos: dict):
+        """Auto-redeem tokens after market resolution."""
+        if not self.redeemer:
+            log.warning(f"  ⚠️ Redeemer not initialized — tokens need manual redemption")
+            return
+
+        condition_id = pos['condition_id']
+        market = (pos.get('market_question') or '')[:40]
+
+        try:
+            # Check if condition is actually resolved on-chain
+            if not self.redeemer.is_condition_resolved(condition_id):
+                log.info(f"  ⏳ {market} not yet resolved on-chain, will retry later")
+                return
+
+            # Check token balance
+            token_id = pos.get('token_id', '')
+            balance = self.redeemer.check_token_balance(token_id) if token_id else 0
+            if balance == 0:
+                log.info(f"  ⏭️ No tokens to redeem for {market}")
+                return
+
+            log.info(f"  💰 Auto-redeeming {balance} tokens for {market}...")
+            result = self.redeemer.redeem(condition_id)
+
+            if result.get('success'):
+                tx_hash = result.get('tx_hash', '')
+                log.info(f"  ✅ Redeemed! TX: {tx_hash}")
+            else:
+                error = result.get('error', 'unknown')
+                log.warning(f"  ⚠️ Redeem failed: {error} — may need manual claim")
+        except Exception as e:
+            log.error(f"  ❌ Auto-redeem error: {e}")
 
     def _write_notification(self, message: str):
         """Write notification for external pickup."""

@@ -358,6 +358,16 @@ class LeaderMonitor:
                 live_balance = self.executor.get_balance()
                 log.info(f"🔴 LIVE MODE — Real money on the line!")
                 log.info(f"💰 USDC Balance: ${live_balance:.2f}")
+
+                # Initialize redeemer for auto-claiming wins
+                try:
+                    from src.redeemer import Redeemer
+                    pk = os.environ.get("POLYGON_PRIVATE_KEY", "")
+                    addr = os.environ.get("POLYGON_WALLET_ADDRESS", "")
+                    self.exit_monitor.redeemer = Redeemer(pk, addr)
+                    log.info(f"✅ Auto-redeemer initialized")
+                except Exception as e:
+                    log.warning(f"⚠️ Redeemer init failed: {e} — wins will need manual redemption")
             except Exception as e:
                 log.error(f"❌ Failed to initialize executor: {e}")
                 log.error("Falling back to PAPER MODE")
