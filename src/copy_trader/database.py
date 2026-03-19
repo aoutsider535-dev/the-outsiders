@@ -294,9 +294,11 @@ class CopyTraderDB:
         import datetime
         today = datetime.date.today().isoformat()
         c = self.conn.cursor()
+        # Only count LIVE trades toward daily loss limit (paper losses don't matter)
         c.execute("""
             SELECT COALESCE(SUM(pnl), 0) FROM positions 
             WHERE closed_at >= ? AND status IN ('resolved_win', 'resolved_loss')
+            AND is_paper = 0
         """, (int(time.time()) - 86400,))
         return c.fetchone()[0]
 
