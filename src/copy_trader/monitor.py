@@ -11,6 +11,7 @@ from . import config
 from .database import CopyTraderDB
 from .filters import FilterPipeline
 from .exit_monitor import ExitMonitor
+from .executor import Executor
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,6 +26,7 @@ class LeaderMonitor:
         self.db = db or CopyTraderDB(config.DB_PATH)
         self.filters = FilterPipeline(self.db)
         self.exit_monitor = ExitMonitor(self.db)
+        self.executor = None  # Initialized in run() if live mode
         self.last_seen = {}  # leader_address -> latest timestamp seen
         self.market_cache = {}  # condition_id -> market info
         self.session = requests.Session()
@@ -170,6 +172,89 @@ class LeaderMonitor:
 
         return pos_id
 
+    def _execute_live_trade(self, leader_trade_id: int, leader_address: str,
+                             leader_name: str, trade_data: dict, market_info: dict,
+                             trade_size: float):
+        """Live trade — place real order on Polymarket CLOB."""
+        if not self.executor:
+            log.error("❌ Executor not initialized!")
+            return None
+
+        price = float(trade_data.get('price', 0) or 0)
+        if price <= 0:
+            log.warning(f"Invalid price {price} for live trade")
+            return None
+
+        condition_id = trade_data.get('conditionId', '')
+        asset_id = trade_data.get('asset', '')  # token_id the leader bought
+        side = trade_data.get('side', 'BUY')
+        question = market_info.get('question', '')[:80]
+        category = market_info.get('category', '')
+
+        # Map asset to outcome
+        outcome_side = side
+        for token in market_info.get('tokens', []):
+            if token.get('token_id', '') == asset_id:
+                outcome_side = token.get('outcome', side)
+                break
+
+        # Slippage guard: don't pay more than leader's price + 3%
+        max_price = min(price * (1 + config.SLIPPAGE_TOLERANCE), config.MAX_ENTRY_PRICE)
+
+        log.info(f"🔴 LIVE BUY: {leader_name} → {outcome_side} ${trade_size:.2f} "
+                 f"| max ${max_price:.3f} | {question}")
+
+        # Place the order
+        fill = self.executor.buy(
+            token_id=asset_id,
+            condition_id=condition_id,
+            usdc_amount=trade_size,
+            max_price=max_price,
+            slippage=config.SLIPPAGE_TOLERANCE,
+        )
+
+        if not fill:
+            log.warning(f"  ⚠️ Order failed — no fill")
+            return None
+
+        # Verify fill (wait up to 12s for on-chain confirmation)
+        if config.TX_CONFIRMATION:
+            verify = self.executor.verify_fill(fill['order_id'], max_wait=12)
+            if verify and verify.get('size_matched', 0) == 0:
+                log.warning(f"  ⚠️ Order not filled (status: {verify.get('status')})")
+                return None
+
+        # Record position in DB
+        real_price = fill['fill_price']
+        real_shares = fill['fill_shares']
+        real_cost = fill['fill_cost']
+        fee = fill.get('fee_estimate', 0)
+
+        pos_id = self.db.open_position(
+            leader_trade_id=leader_trade_id,
+            leader_address=leader_address,
+            leader_name=leader_name,
+            condition_id=condition_id,
+            token_id=asset_id,
+            market_question=question,
+            market_category=category,
+            side=outcome_side,
+            entry_price=real_price,
+            shares=real_shares,
+            usdc_size=real_cost,
+            is_paper=False,
+            tx_hash=fill.get('order_id', ''),
+        )
+
+        log.info(f"  ✅ LIVE POSITION OPENED: {real_shares:.1f}sh @ ${real_price:.3f} "
+                 f"(cost ${real_cost:.2f}, ~${fee:.2f} fee) | {question}")
+
+        # Update balance
+        new_bal = self.executor.get_balance()
+        log.info(f"  💰 Balance: ${new_bal:.2f}")
+
+        return pos_id
+
     def process_leader(self, address: str):
         """Check one leader for new trades."""
         leader_cfg = config.LEADERS.get(address, {})
@@ -247,18 +332,35 @@ class LeaderMonitor:
                     trade_id, address, leader_name, trade, market_info, trade_size
                 )
             else:
-                # TODO: Live execution via Polymarket CLOB
-                log.warning("LIVE MODE NOT IMPLEMENTED YET")
+                self._execute_live_trade(
+                    trade_id, address, leader_name, trade, market_info, trade_size
+                )
 
     def initialize(self, paper_balance: float = 500.0):
         """Initialize the monitor — set starting state and seed last_seen timestamps."""
         self.paper_balance = paper_balance
         self.paper_starting_balance = paper_balance
 
+        # Initialize executor for live mode
+        if not config.PAPER_MODE:
+            try:
+                self.executor = Executor()
+                self.exit_monitor.executor = self.executor  # Wire into exit monitor
+                live_balance = self.executor.get_balance()
+                log.info(f"🔴 LIVE MODE — Real money on the line!")
+                log.info(f"💰 USDC Balance: ${live_balance:.2f}")
+            except Exception as e:
+                log.error(f"❌ Failed to initialize executor: {e}")
+                log.error("Falling back to PAPER MODE")
+                config.PAPER_MODE = True
+
         log.info(f"{'='*60}")
-        log.info(f"🤖 COPY TRADER {'(PAPER MODE)' if config.PAPER_MODE else '(LIVE MODE)'}")
+        log.info(f"🤖 COPY TRADER {'(PAPER MODE)' if config.PAPER_MODE else '🔴 (LIVE MODE)'}")
         log.info(f"{'='*60}")
-        log.info(f"Starting balance: ${paper_balance:.2f}")
+        if config.PAPER_MODE:
+            log.info(f"Starting balance: ${paper_balance:.2f}")
+        else:
+            log.info(f"Starting balance: ${live_balance:.2f}")
         log.info(f"Leaders: {len([l for l in config.LEADERS.values() if l.get('enabled')])}")
         log.info(f"Poll interval: {config.POLL_INTERVAL_SEC}s")
         log.info(f"Sizing: {config.SIZING_MODE} (${config.FIXED_TRADE_SIZE})")

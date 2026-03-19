@@ -20,8 +20,9 @@ log = logging.getLogger("copy_trader")
 
 
 class ExitMonitor:
-    def __init__(self, db: CopyTraderDB):
+    def __init__(self, db: CopyTraderDB, executor=None):
         self.db = db
+        self.executor = executor  # Set by monitor when live
         self.session = requests.Session()
         self.price_cache = {}  # condition_id -> (price, timestamp)
         self.peak_prices = {}  # position_id -> highest price seen (for trailing stop)
@@ -237,17 +238,36 @@ class ExitMonitor:
         entry_price = pos['entry_price']
         shares = pos['shares']
         usdc_size = pos['usdc_size']
+        is_paper = pos.get('is_paper', True)
 
-        # Calculate P&L
-        if exit_reason == 'resolution':
-            if exit_signal.get('won'):
-                pnl = shares * 1.0 - usdc_size  # Won: shares resolve to $1 each
+        # For live positions that need to SELL (not resolution), execute the sell
+        if not is_paper and self.executor and exit_reason != 'resolution':
+            log.info(f"  🔴 LIVE SELL: {shares:.1f}sh of {pos['market_question'][:40]}...")
+            fill = self.executor.sell(
+                token_id=pos['token_id'],
+                condition_id=pos['condition_id'],
+                shares=shares,
+            )
+            if fill:
+                exit_price = fill['fill_price']
+                proceeds = fill.get('usdc_received', shares * exit_price)
+                fee = fill.get('fee_estimate', 0)
+                pnl = proceeds - usdc_size
+                log.info(f"  ✅ SOLD: ${proceeds:.2f} received (fee ~${fee:.2f})")
             else:
-                pnl = -usdc_size  # Lost: shares worth $0
+                log.warning(f"  ⚠️ SELL FAILED — keeping position open")
+                return None  # Don't close if sell failed
         else:
-            # Selling on secondary market
-            proceeds = shares * exit_price * (1 - 0.02)  # 2% taker fee
-            pnl = proceeds - usdc_size
+            # Paper mode or resolution — calculate P&L
+            if exit_reason == 'resolution':
+                if exit_signal.get('won'):
+                    pnl = shares * 1.0 - usdc_size  # Won: shares resolve to $1 each
+                else:
+                    pnl = -usdc_size  # Lost: shares worth $0
+            else:
+                # Paper selling on secondary market
+                proceeds = shares * exit_price * (1 - 0.02)  # 2% taker fee estimate
+                pnl = proceeds - usdc_size
 
         # Close in DB
         self.db.close_position(pos['id'], exit_price, exit_reason, pnl)

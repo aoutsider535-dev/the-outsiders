@@ -150,7 +150,7 @@ POLL_INTERVAL_SEC = 3               # How often to check leader activity
 TX_CONFIRMATION = True              # Wait for on-chain confirmation
 RETRY_COUNT = 3                     # Retry failed orders N times
 RETRY_DELAY_SEC = 2                 # Delay between retries
-PAPER_MODE = True                   # True = paper trading, False = live
+PAPER_MODE = False                  # True = paper trading, False = LIVE
 
 # Alerting
 ALERT_ON_COPY = True                # Notify when trade is copied
