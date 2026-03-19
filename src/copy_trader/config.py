@@ -7,49 +7,51 @@ All tunable parameters in one place.
 # LEADERS
 # ═══════════════════════════════════════════════════════════
 LEADERS = {
-    "0xdc876e6873772d38716fda7f2452a78d426d7ab6": {
-        "name": "Leader_1",
-        "enabled": True,
-        "weight": 1.0,  # Sizing multiplier (leaderWeighting)
-    },
-    "0xd0d6053c3c37e727402d84c14069780d360993aa": {
-        "name": "Leader_2",
+    # ── PROFITABLE (lifetime P&L positive) ──────────────
+    "0x0b9cae2b0dfe7a71c413e0604eaac1c352f87e44": {
+        "name": "Leader_9",   # +$1.2M P&L, +36% ROI, 174 positions
         "enabled": True,
         "weight": 1.0,
     },
     "0x15ceffed7bf820cd2d90f90ea24ae9909f5cd5fa": {
-        "name": "Leader_3",
-        "enabled": True,
-        "weight": 1.0,
-    },
-    "0xdb27bf2ac5d428a9c63dbc914611036855a6c56e": {
-        "name": "Leader_4",
-        "enabled": True,
-        "weight": 1.0,
-    },
-    "0x204f72f35326db932158cba6adff0b9a1da95e14": {
-        "name": "Leader_5",
-        "enabled": True,
-        "weight": 1.0,
-    },
-    "0x02227b8f5a9636e895607edd3185ed6ee5598ff7": {
-        "name": "Leader_6",
-        "enabled": True,
-        "weight": 1.0,
-    },
-    "0x37c1874a60d348903594a96703e0507c518fc53a": {
-        "name": "Leader_7",
+        "name": "Leader_3",   # +$14K P&L, +110% ROI, 194 positions
         "enabled": True,
         "weight": 1.0,
     },
     "0x2d8b401d2f0e6937afebf18e19e11ca568a5260a": {
-        "name": "Leader_8",
+        "name": "Leader_8",   # +$3.5K P&L, +149% ROI, 4 positions
         "enabled": True,
         "weight": 1.0,
     },
-    "0x0b9cae2b0dfe7a71c413e0604eaac1c352f87e44": {
-        "name": "Leader_9",
-        "enabled": True,
+    # ── DISABLED (negative lifetime P&L) ─────────────
+    "0xdc876e6873772d38716fda7f2452a78d426d7ab6": {
+        "name": "Leader_1",   # -$16M
+        "enabled": False,
+        "weight": 1.0,
+    },
+    "0xd0d6053c3c37e727402d84c14069780d360993aa": {
+        "name": "Leader_2",   # -$1.7K
+        "enabled": False,
+        "weight": 1.0,
+    },
+    "0xdb27bf2ac5d428a9c63dbc914611036855a6c56e": {
+        "name": "Leader_4",   # -$31.3M
+        "enabled": False,
+        "weight": 1.0,
+    },
+    "0x204f72f35326db932158cba6adff0b9a1da95e14": {
+        "name": "Leader_5",   # -$119K
+        "enabled": False,
+        "weight": 1.0,
+    },
+    "0x02227b8f5a9636e895607edd3185ed6ee5598ff7": {
+        "name": "Leader_6",   # -$3.1M
+        "enabled": False,
+        "weight": 1.0,
+    },
+    "0x37c1874a60d348903594a96703e0507c518fc53a": {
+        "name": "Leader_7",   # -$5.1M
+        "enabled": False,
         "weight": 1.0,
     },
 }
