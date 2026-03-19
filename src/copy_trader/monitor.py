@@ -2,6 +2,7 @@
 Copy Trader Leader Monitor
 Polls leader wallets for new trades, runs through filter pipeline, executes copies.
 """
+import os
 import time
 import json
 import logging
@@ -253,6 +254,14 @@ class LeaderMonitor:
         new_bal = self.executor.get_balance()
         log.info(f"  💰 Balance: ${new_bal:.2f}")
 
+        # Notify via file (picked up by external notifier)
+        self._write_notification(
+            f"🔴 LIVE TRADE: {leader_name} → {outcome_side}\n"
+            f"${real_cost:.2f} @ ${real_price:.3f} ({real_shares:.0f}sh)\n"
+            f"{question}\n"
+            f"💰 Balance: ${new_bal:.2f}"
+        )
+
         return pos_id
 
     def process_leader(self, address: str):
@@ -415,6 +424,23 @@ class LeaderMonitor:
                 time.sleep(5)
 
         self._print_summary()
+
+    def _write_notification(self, message: str):
+        """Write a notification to a file for external pickup (e.g., by OpenClaw heartbeat)."""
+        try:
+            notify_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 
+                                        "data", "notifications.jsonl")
+            import json
+            entry = json.dumps({
+                "timestamp": int(time.time()),
+                "message": message,
+                "delivered": False,
+            })
+            with open(notify_path, "a") as f:
+                f.write(entry + "\n")
+            log.info(f"  📱 Notification queued")
+        except Exception as e:
+            log.warning(f"  ⚠️ Notification write failed: {e}")
 
     def _print_summary(self):
         """Print final paper trading summary."""

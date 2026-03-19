@@ -293,4 +293,28 @@ class ExitMonitor:
             f"Reason: {exit_reason} | P&L: ${pnl:+.2f} | {exit_signal.get('details', '')}"
         )
 
+        # Notify on live trade exits
+        if not pos.get('is_paper', True):
+            self._write_notification(
+                f"{emoji} TRADE CLOSED: {pos['leader_name']}\n"
+                f"{(pos.get('market_question') or '')[:50]}\n"
+                f"Reason: {exit_reason} | P&L: ${pnl:+.2f}"
+            )
+
         return pnl
+
+    def _write_notification(self, message: str):
+        """Write notification for external pickup."""
+        try:
+            import os, json
+            notify_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                                        "data", "notifications.jsonl")
+            entry = json.dumps({
+                "timestamp": int(time.time()),
+                "message": message,
+                "delivered": False,
+            })
+            with open(notify_path, "a") as f:
+                f.write(entry + "\n")
+        except Exception as e:
+            log.warning(f"Notification write failed: {e}")
