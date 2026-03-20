@@ -68,7 +68,8 @@ MIN_MARKET_AGE_SEC = 600            # Skip if market opened < N seconds ago (10 
 
 # Price
 MAX_ENTRY_PRICE = 0.95              # Don't buy tokens above this (too little upside)
-MIN_ENTRY_PRICE = 0.25              # Don't buy tokens below this (longshots lose)
+MIN_ENTRY_PRICE = 0.42              # Don't buy tokens below this (with buffer for slippage)
+MIN_FILL_PRICE = 0.37               # Post-fill hard floor — immediately sell if filled below this
 SLIPPAGE_TOLERANCE = 0.03           # Max 3% slippage vs leader's fill price
 
 # Leader trade size
@@ -138,8 +139,8 @@ TRAILING_STOP_PCT = 0.0             # Trailing SL (0 = disabled)
 # LEADER MANAGEMENT
 # ═══════════════════════════════════════════════════════════
 
-LEADER_COOLDOWN_LOSSES = 3          # Pause leader after N consecutive losses
-LEADER_COOLDOWN_HOURS = 24          # How long to pause
+LEADER_COOLDOWN_LOSSES = 999         # Effectively disabled — don't auto-pause proven leaders
+LEADER_COOLDOWN_HOURS = 0            # Disabled
 LEADER_CORRELATION_CHECK = True     # Detect if two leaders copy each other
 
 # ═══════════════════════════════════════════════════════════

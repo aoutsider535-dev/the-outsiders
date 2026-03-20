@@ -225,11 +225,26 @@ class LeaderMonitor:
                 log.warning(f"  ⚠️ Order not filled (status: {verify.get('status')})")
                 return None
 
-        # Record position in DB
+        # Post-fill price check — immediately sell if filled below hard floor
         real_price = fill['fill_price']
         real_shares = fill['fill_shares']
         real_cost = fill['fill_cost']
         fee = fill.get('fee_estimate', 0)
+
+        if hasattr(config, 'MIN_FILL_PRICE') and real_price < config.MIN_FILL_PRICE:
+            log.warning(f"  ⚠️ Fill price ${real_price:.3f} below floor ${config.MIN_FILL_PRICE:.3f} — dumping immediately")
+            sell_result = self.executor.sell(
+                token_id=asset_id,
+                condition_id=condition_id,
+                shares=real_shares,
+                min_price=0.01,
+            )
+            if sell_result:
+                recovered = sell_result.get('usdc_received', 0)
+                log.info(f"  🔄 Emergency sell: recovered ${recovered:.2f} of ${real_cost:.2f}")
+            else:
+                log.error(f"  ❌ Emergency sell failed — stuck with bad fill")
+            return None
 
         pos_id = self.db.open_position(
             leader_trade_id=leader_trade_id,
