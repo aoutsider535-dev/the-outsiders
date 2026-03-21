@@ -37,6 +37,7 @@ class FilterPipeline:
             self._filter_leader_paused,
             self._filter_trade_side,
             self._filter_trade_age,
+            self._filter_block_crypto_updown,
             self._filter_crypto_entry_window,
             self._filter_market_resolve_time,
             self._filter_market_age,
@@ -66,6 +67,19 @@ class FilterPipeline:
                 return result
 
         return FilterResult(True, "passed_all_filters")
+
+    # ─── Block Crypto Up/Down ──────────────────────────
+
+    def _filter_block_crypto_updown(self, leader_address, leader_name, trade, market):
+        """Block ALL crypto up/down markets from copy trading.
+        We run our own drift sniper for these — don't let copy trader interfere."""
+        question = market.get('question', '')
+        market_type = classify_market(question, market)
+        if market_type.startswith('crypto_'):
+            return FilterResult(False, "crypto_updown_blocked",
+                                {"market_type": market_type,
+                                 "reason": "drift sniper handles crypto"})
+        return FilterResult(True, "not_crypto_updown", {"market_type": market_type})
 
     # ─── Crypto Entry Window ───────────────────────────
 
