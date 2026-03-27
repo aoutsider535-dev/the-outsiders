@@ -47,6 +47,46 @@ def classify_market(question: str, market_info: dict = None) -> str:
 
         return 'crypto_other'
 
+    # Esports — Counter-Strike
+    cs_keywords = ['counter-strike:', 'cs2 ', 'cs2:']
+    if any(kw in q for kw in cs_keywords):
+        return 'esports_cs'
+
+    # Esports — Valorant
+    valorant_keywords = ['valorant:']
+    if any(kw in q for kw in valorant_keywords):
+        return 'esports_valorant'
+
+    # Esports — League of Legends
+    lol_keywords = ['lol:', 'league of legends:']
+    if any(kw in q for kw in lol_keywords):
+        return 'esports_lol'
+
+    # Esports — generic (catch remaining esports patterns)
+    esports_generic = ['(bo3)', '(bo1)', '(bo5)', 'map 1 winner', 'map 2 winner',
+                       'map 3 winner', 'game 1 winner', 'game 2 winner', 'game 3 winner',
+                       'dota 2:', 'overwatch:', 'rocket league:']
+    if any(kw in q for kw in esports_generic):
+        return 'esports_other'
+
+    # Tennis — detect by pattern, not just city list
+    # Major tournaments
+    tennis_keywords = ['miami open:', 'french open:', 'australian open:', 'us open:',
+                       'wimbledon:', 'roland garros:', 'atp ', 'wta ']
+    if any(kw in q for kw in tennis_keywords):
+        return 'tennis'
+    # Tennis pattern: "City: FirstName LastName vs FirstName LastName"
+    # Key signals: uses " vs " (not "vs."), has "City:" prefix, no team-like keywords
+    # This catches ALL tennis venues without a hardcoded city list
+    tennis_pattern = re.match(r'^[a-z\s\-\']+:\s+\w+\s+\w+[\w\s\-]*\s+vs\s+\w+\s+\w+', q)
+    if tennis_pattern and ' vs ' in q and 'vs.' not in q:
+        # Exclude known non-tennis patterns
+        non_tennis = ['counter-strike:', 'valorant:', 'lol:', 'league of legends:',
+                      'dota 2:', 'overwatch:', 'rocket league:', 'spread:',
+                      't20 ', 'cricket:']
+        if not any(nt in q for nt in non_tennis):
+            return 'tennis'
+
     # Sports
     sports_keywords = ['spread:', 'o/u', 'over', 'under', 'vs.', 'win on', 'end in a draw',
                        'exact score:', 'leading at halftime', 'nba', 'nfl', 'nhl',
@@ -61,6 +101,11 @@ def classify_market(question: str, market_info: dict = None) -> str:
         return 'politics'
 
     return 'other'
+
+
+def is_esports(market_type: str) -> bool:
+    """Check if a market type is any esports category."""
+    return market_type.startswith('esports_')
 
 
 def parse_market_window(question: str):
@@ -109,18 +154,28 @@ def get_entry_rules(market_type: str) -> dict:
     """Get entry rules for a market type."""
     if market_type.startswith('crypto_'):
         return {
+            'min_entry_price': 0.50,
             'max_entry_sec': 120,       # Only enter within first 2 minutes
             'hold_to_resolution': True,  # Hold to expiration
             'copy_leader_exit': True,    # BUT if leader sells, we sell too
         }
+    elif is_esports(market_type):
+        return {
+            'min_entry_price': 0.60,    # Esports below 60¢ is a coin flip
+            'max_entry_sec': None,
+            'hold_to_resolution': True,
+            'copy_leader_exit': True,
+        }
     elif market_type == 'sports':
         return {
-            'max_entry_sec': None,       # No time restriction for sports
-            'hold_to_resolution': True,  # Hold to resolution
-            'copy_leader_exit': True,    # Follow leader exits
+            'min_entry_price': 0.50,
+            'max_entry_sec': None,
+            'hold_to_resolution': True,
+            'copy_leader_exit': True,
         }
     else:
         return {
+            'min_entry_price': 0.50,
             'max_entry_sec': None,
             'hold_to_resolution': True,
             'copy_leader_exit': True,

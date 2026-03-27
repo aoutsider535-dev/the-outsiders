@@ -306,12 +306,16 @@ class CopyTraderDB:
 
     def has_position_in_market(self, condition_id):
         """Check if we already have an open position in this market."""
+        return self.count_positions_in_market(condition_id) > 0
+
+    def count_positions_in_market(self, condition_id):
+        """Count how many open positions we have in this market."""
         c = self.conn.cursor()
         c.execute("""
             SELECT COUNT(*) FROM positions 
             WHERE condition_id = ? AND status = 'open'
         """, (condition_id,))
-        return c.fetchone()[0] > 0
+        return c.fetchone()[0]
 
     def leader_recent_sells(self, leader_address, condition_id, window_sec=300):
         """Check if leader recently sold in this market."""

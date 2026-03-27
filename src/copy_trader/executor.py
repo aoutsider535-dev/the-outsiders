@@ -202,6 +202,68 @@ class Executor:
             if resp and resp.get("success"):
                 taking = float(resp.get("takingAmount") or 0)  # shares
                 making = float(resp.get("makingAmount") or 0)  # USDC
+
+                # Guard against zero-fill: CLOB can return success with 0 shares
+                # But verify on-chain — CLOB sometimes lies about takingAmount
+                # The data API has indexing lag, so we retry multiple times
+                if taking < 0.01:
+                    order_id = resp.get('orderID', '?')
+                    logger.warning(f"  ⚠️ Zero-fill response: takingAmount={taking} "
+                                   f"(orderID={order_id}). Verifying...")
+
+                    # Strategy: check order status first (faster), then positions API
+                    # Retry with increasing delays to handle data API indexing lag
+                    verified = False
+                    our_wallet = (os.environ.get("POLYMARKET_PROXY_WALLET", "") or 
+                                  os.environ.get("POLYGON_WALLET_ADDRESS", "")).lower()
+
+                    for attempt, delay in enumerate([2, 3, 5, 5], 1):
+                        time.sleep(delay)
+
+                        # Method 1: Check order status via CLOB
+                        try:
+                            if order_id and order_id != '?':
+                                order_status = self.client.get_order(order_id)
+                                if order_status:
+                                    sm = float(order_status.get("size_matched", 0) or 0)
+                                    if sm > 0.01:
+                                        taking = sm
+                                        making = sm * aggressive_price  # Estimate
+                                        logger.info(f"  ✅ Order status check (attempt {attempt}): "
+                                                   f"size_matched={sm:.1f}sh")
+                                        verified = True
+                                        break
+                        except Exception as e:
+                            logger.debug(f"  Order status check failed: {e}")
+
+                        # Method 2: Check positions API (has indexing lag)
+                        try:
+                            r = requests.get("https://data-api.polymarket.com/positions",
+                                            params={"user": our_wallet, "sizeThreshold": 0, "limit": 100},
+                                            timeout=10)
+                            for pos in r.json():
+                                if pos.get("conditionId") == condition_id:
+                                    chain_shares = float(pos.get("size", 0) or 0)
+                                    chain_iv = float(pos.get("initialValue", 0) or 0)
+                                    if chain_shares > 0.01:
+                                        taking = chain_shares
+                                        making = chain_iv
+                                        real_price = making / taking if taking > 0 else aggressive_price
+                                        logger.info(f"  ✅ On-chain verification (attempt {attempt}): "
+                                                   f"ACTUALLY filled! {taking:.1f}sh, ${making:.2f} invested")
+                                        verified = True
+                                        break
+                            if verified:
+                                break
+                        except Exception as e:
+                            logger.debug(f"  Positions API check failed: {e}")
+
+                        logger.info(f"  ⏳ Verification attempt {attempt}/4 — not found yet, retrying...")
+
+                    if not verified:
+                        logger.warning(f"  ⚠️ Confirmed zero-fill after 4 checks (~15s) — no position on-chain")
+                        return None
+
                 real_price = making / taking if taking > 0 else aggressive_price
 
                 fill = {

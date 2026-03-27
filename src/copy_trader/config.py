@@ -9,20 +9,40 @@ All tunable parameters in one place.
 LEADERS = {
     # ── PROFITABLE (lifetime P&L positive) ──────────────
     "0x0b9cae2b0dfe7a71c413e0604eaac1c352f87e44": {
-        "name": "Leader_9",   # +$1.2M P&L, +36% ROI, 174 positions
-        "enabled": True,
+        "name": "Leader_9",   # +$1.2M P&L, +36% ROI, 174 positions — disabled: 32% WR for us
+        "enabled": False,
         "weight": 1.0,
     },
     "0x15ceffed7bf820cd2d90f90ea24ae9909f5cd5fa": {
-        "name": "Leader_3",   # +$14K P&L, +110% ROI, 194 positions
-        "enabled": True,
+        "name": "Leader_3",   # DISABLED: weather MM, not copyable
+        "enabled": False,
         "weight": 1.0,
     },
     "0x2d8b401d2f0e6937afebf18e19e11ca568a5260a": {
-        "name": "Leader_8",   # +$3.5K P&L, +149% ROI, 4 positions
-        "enabled": True,
+        "name": "Leader_8",   # +$3.5K P&L, +149% ROI, 4 positions — disabled: 46% WR, cratered Mar 19
+        "enabled": False,
         "weight": 1.0,
     },
+    # ── SPORTS SPECIALIST ──────────────────────────────
+    "0xdbdd45150249e229eb4ca8aa48a30dca21faa5de": {
+        "name": "SportsBettor",  # 1024 positions, 62% WR overall but 89% on high-conviction sports
+        "enabled": True,
+        "weight": 1.0,
+        # Per-leader overrides: only copy their big, confident bets
+        "min_entry_price": 0.52,      # Drop to $0.52+ to capture more of their edge
+        "min_leader_trade_size": 0,   # No size filter — they're profitable at all sizes
+    },
+    # ── GEOPOLITICS SPECIALIST ─────────────────────────────
+    "0xd5ccdf772f795547e299de57f47966e24de8dea4": {
+        "name": "tsybka",     # $256K profit, 87% WR, geopolitics/war/Iran/crypto
+        "enabled": False,     # PAUSED: 0 fills, all signals above $0.92 cap. Revisit later.
+        "weight": 1.0,
+        "min_entry_price": 0.60,      # Below $0.60 = penny longshots + Lyman-type concentrated risk
+        "max_entry_price": 0.92,      # Above $0.92 = near-resolved, thin margin
+        "min_leader_trade_size": 0,
+    },
+    # ── REMOVED (latency arb, not copyable) ──────────────
+    # jackenand (0x204e...8d08) — 95% WR but 85% of trades at $0.95+, buying known winners pre-resolution
     # ── DISABLED (negative lifetime P&L) ─────────────
     "0xdc876e6873772d38716fda7f2452a78d426d7ab6": {
         "name": "Leader_1",   # -$16M
@@ -84,6 +104,7 @@ LEADER_CONVICTION_PCT = 0.0         # Only copy if leader puts > X% of portfolio
 
 # Duplicates
 DUPLICATE_FILTER = True             # Skip if we already have a position in this exact market
+MAX_BUYS_PER_MARKET = 2             # Max separate buys per market (1=no double-down, 2=one double-down)
 
 # Leader quality
 MIN_LEADER_WIN_RATE = 0.0           # Only copy leaders above X% WR (0 = disabled, needs tracking data)
@@ -121,7 +142,7 @@ MAX_EXPOSURE_PER_LEADER = 50.0      # Max $ following one leader
 MAX_EXPOSURE_PER_MARKET = 30.0      # Max $ in one market
 MAX_EXPOSURE_PER_CATEGORY = 0.30    # Max fraction of portfolio per category (30%)
 MAX_PORTFOLIO_RISK_PCT = 0.50       # Total portfolio at risk can't exceed 50%
-DAILY_LOSS_LIMIT = 25.0             # Stop ALL copying if daily P&L hits -$X
+DAILY_LOSS_LIMIT = 0                # Disabled — no daily loss limit
 MAX_DRAWDOWN = 50.0                 # Kill switch — stop if total drawdown exceeds $X
 
 # ═══════════════════════════════════════════════════════════
@@ -130,7 +151,7 @@ MAX_DRAWDOWN = 50.0                 # Kill switch — stop if total drawdown exc
 
 COPY_LEADER_EXIT = True             # If leader sells, we exit too
 COPY_LEADER_EXIT_DELAY_SEC = 10     # Delay before copying leader's exit (avoid front-running)
-STOP_LOSS_PCT = 0.0                 # Our own SL (0 = disabled, hold to resolution)
+STOP_LOSS_PCT = 0.60                # 60% stop loss — sell when down 60% of invested amount
 TAKE_PROFIT_PCT = 0.0               # Our own TP (0 = disabled, hold to resolution)
 MAX_HOLD_TIME_DAYS = 30             # Force exit after 30 days (safety net for long-term markets)
 TRAILING_STOP_PCT = 0.0             # Trailing SL (0 = disabled)
@@ -147,7 +168,10 @@ LEADER_CORRELATION_CHECK = True     # Detect if two leaders copy each other
 # OPERATIONAL
 # ═══════════════════════════════════════════════════════════
 
-POLL_INTERVAL_SEC = 3               # How often to check leader activity
+POLL_INTERVAL_SEC = 1               # Daytime default (7am-9pm PST)
+POLL_INTERVAL_NIGHT_SEC = 3         # Overnight (9pm-7am PST) — less esports noise
+NIGHT_START_HOUR = 21               # 9pm PST
+NIGHT_END_HOUR = 7                  # 7am PST
 TX_CONFIRMATION = True              # Wait for on-chain confirmation
 RETRY_COUNT = 3                     # Retry failed orders N times
 RETRY_DELAY_SEC = 2                 # Delay between retries

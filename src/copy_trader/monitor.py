@@ -32,6 +32,8 @@ class LeaderMonitor:
         self.market_cache = {}  # condition_id -> market info
         self.session = requests.Session()
         self.running = False
+        self.last_ghost_check = 0  # timestamp of last ghost position check
+        self.ghost_check_interval = 60  # check every 60 seconds
         
         # Paper mode state
         self.paper_balance = 0.0
@@ -422,6 +424,274 @@ class LeaderMonitor:
 
         log.info(f"\n✅ Monitoring started. Waiting for new leader trades...\n")
 
+        # Startup reconciliation: sync on-chain positions into DB
+        if not config.PAPER_MODE:
+            self._startup_reconcile()
+
+    def _check_ghost_positions(self):
+        """
+        Periodic check for ghost positions: positions on-chain that aren't in our DB.
+        Catches orders that the CLOB reported as zero-fill but actually filled.
+        Runs every ghost_check_interval seconds.
+        """
+        now = time.time()
+        if now - self.last_ghost_check < self.ghost_check_interval:
+            return
+        self.last_ghost_check = now
+
+        if config.PAPER_MODE:
+            return
+
+        our_wallet = (os.environ.get("POLYMARKET_PROXY_WALLET", "") or 
+                      os.environ.get("POLYGON_WALLET_ADDRESS", "")).lower()
+        if not our_wallet:
+            return
+
+        try:
+            r = self.session.get(
+                "https://data-api.polymarket.com/positions",
+                params={"user": our_wallet, "sizeThreshold": 0, "limit": 100},
+                timeout=15,
+            )
+            if r.status_code != 200:
+                return
+
+            on_chain = r.json()
+            db_positions = self.db.get_open_positions()
+            db_condition_ids = {p['condition_id'] for p in db_positions}
+            # CRITICAL: also include CLOSED positions to prevent re-inserting resolved ones
+            _cur = self.db.conn.cursor() if hasattr(self.db, 'conn') else None
+            if _cur:
+                _cur.execute("SELECT DISTINCT condition_id FROM positions WHERE is_paper=0")
+                db_condition_ids.update(row[0] for row in _cur.fetchall())
+
+            synced = 0
+            for p in on_chain:
+                iv = float(p.get('initialValue', 0) or 0)
+                size = float(p.get('size', 0) or 0)
+                cur_value = float(p.get('currentValue', 0) or 0)
+                if iv < 1 or size < 0.01:
+                    continue  # Skip dust
+
+                cid = p.get('conditionId', '')
+                if not cid or cid in db_condition_ids:
+                    continue  # Already tracked
+
+                # Double-check: also match on token_id to avoid dupes from different cid formats
+                token_id = p.get('asset', '') or ''
+                if token_id:
+                    cur = self.db.conn.cursor() if hasattr(self.db, 'conn') else None
+                    if cur:
+                        cur.execute("SELECT COUNT(*) FROM positions WHERE token_id = ? AND status = 'open'", (token_id,))
+                        if cur.fetchone()[0] > 0:
+                            continue  # Already tracked under different condition_id
+
+                # Ghost position found! On-chain but not in DB.
+                avg_price = float(p.get('avgPrice', 0) or 0)
+                outcome = p.get('outcome', '') or ''
+                title = p.get('title', '') or ''
+                token_id = p.get('asset', '') or ''
+
+                # Best-effort leader attribution
+                leader_name = 'Ghost_Recovery'
+                leader_address = ''
+                for addr, cfg in config.LEADERS.items():
+                    if cfg.get('enabled'):
+                        if not leader_address:
+                            leader_name = cfg.get('name', addr[:10])
+                            leader_address = addr
+
+                pos_id = self.db.open_position(
+                    leader_trade_id=None,
+                    leader_address=leader_address,
+                    leader_name=leader_name,
+                    condition_id=cid,
+                    token_id=token_id,
+                    market_question=title,
+                    market_category='',
+                    side=outcome,
+                    entry_price=avg_price,
+                    shares=size,
+                    usdc_size=iv,
+                    is_paper=False,
+                    tx_hash='',
+                )
+
+                log.warning(
+                    f"👻 GHOST POSITION RECOVERED: {outcome} | ${iv:.2f} @ ${avg_price:.3f} "
+                    f"({size:.1f}sh) | {title[:50]}"
+                )
+                self._write_notification(
+                    f"👻 GHOST POSITION RECOVERED\n"
+                    f"{title[:50]}\n"
+                    f"${iv:.2f} @ ${avg_price:.3f} ({size:.1f}sh)\n"
+                    f"Now being monitored for SL/TP/resolution"
+                )
+                synced += 1
+
+            if synced:
+                log.info(f"👻 Ghost check: recovered {synced} untracked positions")
+
+        except Exception as e:
+            log.debug(f"Ghost position check error: {e}")
+
+    def _startup_reconcile(self):
+        """
+        On startup, check all on-chain positions and ensure they exist in the DB.
+        This catches positions created between bot restarts or manual trades.
+        """
+        our_wallet = (os.environ.get("POLYMARKET_PROXY_WALLET", "") or 
+                      os.environ.get("POLYGON_WALLET_ADDRESS", "")).lower()
+        if not our_wallet:
+            log.warning("⚠️ No wallet address for startup reconciliation")
+            return
+
+        log.info("🔄 Startup reconciliation: syncing on-chain positions to DB...")
+
+        try:
+            r = self.session.get(
+                "https://data-api.polymarket.com/positions",
+                params={"user": our_wallet, "sizeThreshold": 0, "limit": 100},
+                timeout=15,
+            )
+            if r.status_code != 200:
+                log.warning(f"⚠️ Failed to fetch on-chain positions: {r.status_code}")
+                return
+
+            on_chain = r.json()
+            db_positions = self.db.get_open_positions()
+            db_condition_ids = {p['condition_id'] for p in db_positions}
+            # CRITICAL: also include CLOSED positions to prevent re-inserting resolved ones
+            _cur = self.db.conn.cursor() if hasattr(self.db, 'conn') else None
+            if _cur:
+                _cur.execute("SELECT DISTINCT condition_id FROM positions WHERE is_paper=0")
+                db_condition_ids.update(row[0] for row in _cur.fetchall())
+
+            synced = 0
+            for p in on_chain:
+                iv = float(p.get('initialValue', 0) or 0)
+                size = float(p.get('size', 0) or 0)
+                if iv < 1 or size < 0.01:
+                    continue  # Skip dust
+
+                cid = p.get('conditionId', '')
+                if not cid or cid in db_condition_ids:
+                    continue  # Already tracked
+
+                # New position not in DB — add it
+                avg_price = float(p.get('avgPrice', 0) or 0)
+                outcome = p.get('outcome', '') or ''
+                title = p.get('title', '') or ''
+                token_id = p.get('asset', '') or ''
+
+                # Try to figure out which leader this came from
+                leader_name = 'Unknown'
+                leader_address = ''
+                for addr, cfg in config.LEADERS.items():
+                    if cfg.get('enabled'):
+                        # Default to first enabled leader (most likely SportsBettor)
+                        if not leader_address:
+                            leader_name = cfg.get('name', addr[:10])
+                            leader_address = addr
+
+                pos_id = self.db.open_position(
+                    leader_trade_id=None,
+                    leader_address=leader_address,
+                    leader_name=leader_name,
+                    condition_id=cid,
+                    token_id=token_id,
+                    market_question=title,
+                    market_category='',
+                    side=outcome,
+                    entry_price=avg_price,
+                    shares=size,
+                    usdc_size=iv,
+                    is_paper=False,
+                    tx_hash='',
+                )
+
+                log.info(f"  📥 SYNCED: {outcome} | ${iv:.2f} @ ${avg_price:.3f} | {title[:50]}")
+                synced += 1
+
+            if synced:
+                log.info(f"🔄 Startup reconciliation: synced {synced} missing positions")
+            else:
+                log.info(f"🔄 Startup reconciliation: all positions already tracked ✅")
+
+            # Sweep for unredeemed winning positions
+            self._sweep_unredeemed_wins()
+
+        except Exception as e:
+            log.error(f"❌ Startup reconciliation error: {e}")
+
+    def _sweep_unredeemed_wins(self):
+        """Check Polymarket for claimable (resolved) positions and redeem them."""
+        if not self.exit_monitor.redeemer:
+            return
+
+        our_wallet = (os.environ.get("POLYMARKET_PROXY_WALLET", "") or
+                      os.environ.get("POLYGON_WALLET_ADDRESS", "")).lower()
+        if not our_wallet:
+            return
+
+        log.info("🧹 Sweeping for unredeemed winning positions...")
+
+        try:
+            r = self.session.get(
+                "https://data-api.polymarket.com/positions",
+                params={"user": our_wallet, "sizeThreshold": 0, "limit": 200},
+                timeout=15,
+            )
+            if r.status_code != 200:
+                return
+
+            positions = r.json()
+            redeemed_count = 0
+
+            for p in positions:
+                size = float(p.get('size', 0) or 0)
+                if size < 1:
+                    continue  # Skip dust
+
+                cid = p.get('conditionId', '')
+                token_id = p.get('asset', '')
+                title = (p.get('title') or '')[:40]
+                cur_price = float(p.get('curPrice', 0) or 0)
+
+                # Only try to redeem positions at $1.00 or $0.00 (resolved)
+                if cur_price < 0.99 and cur_price > 0.01:
+                    continue  # Still trading, not resolved
+
+                # Check if actually resolved on-chain
+                if not self.exit_monitor.redeemer.is_condition_resolved(cid):
+                    continue
+
+                # Check token balance
+                balance = self.exit_monitor.redeemer.check_token_balance(token_id) if token_id else 0
+                if balance == 0:
+                    continue
+
+                is_winner = cur_price >= 0.99
+
+                emoji = "💰" if is_winner else "🗑️"
+                label = "winner" if is_winner else "loser (burn)"
+                log.info(f"  {emoji} Found unredeemed {label}: {title} ({size:.1f} shares)")
+                result = self.exit_monitor.redeemer.redeem(cid)
+                if result.get('success'):
+                    log.info(f"  ✅ Swept! TX: {result.get('tx_hash', '')[:20]}...")
+                    redeemed_count += 1
+                    time.sleep(5)  # Wait between redeems
+                else:
+                    log.warning(f"  ⚠️ Sweep failed: {result.get('error', 'unknown')}")
+
+            if redeemed_count:
+                log.info(f"🧹 Sweep complete: redeemed {redeemed_count} positions")
+            else:
+                log.info(f"🧹 Sweep complete: nothing to redeem")
+
+        except Exception as e:
+            log.error(f"❌ Sweep error: {e}")
+
     def run(self, paper_balance: float = 500.0):
         """Main loop — poll leaders and process trades."""
         self.initialize(paper_balance)
@@ -439,7 +709,10 @@ class LeaderMonitor:
                 # Check open positions for exit signals
                 self.exit_monitor.check_all_positions()
 
-                time.sleep(config.POLL_INTERVAL_SEC)
+                # Periodic check for ghost positions (on-chain but not in DB)
+                self._check_ghost_positions()
+
+                time.sleep(self._get_poll_interval())
 
             except KeyboardInterrupt:
                 log.info("\n⛔ Stopping copy trader...")
@@ -449,6 +722,19 @@ class LeaderMonitor:
                 time.sleep(5)
 
         self._print_summary()
+
+    def _get_poll_interval(self) -> int:
+        """Return poll interval based on time of day (PST)."""
+        from datetime import timezone, timedelta
+        pst = timezone(timedelta(hours=-8))
+        pdt = timezone(timedelta(hours=-7))
+        # Use PDT (March = daylight saving)
+        now_hour = datetime.now(pdt).hour
+        night_start = getattr(config, 'NIGHT_START_HOUR', 21)
+        night_end = getattr(config, 'NIGHT_END_HOUR', 7)
+        if now_hour >= night_start or now_hour < night_end:
+            return getattr(config, 'POLL_INTERVAL_NIGHT_SEC', 3)
+        return config.POLL_INTERVAL_SEC
 
     def _write_notification(self, message: str):
         """Write a notification to a file for external pickup (e.g., by OpenClaw heartbeat)."""

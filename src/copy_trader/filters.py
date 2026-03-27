@@ -6,7 +6,7 @@ Trade must pass ALL filters to be copied.
 import time
 from . import config
 from .database import CopyTraderDB
-from .market_rules import classify_market, parse_market_window, get_entry_rules
+from .market_rules import classify_market, parse_market_window, get_entry_rules, is_esports
 
 
 class FilterResult:
@@ -209,19 +209,40 @@ class FilterPipeline:
 
     def _filter_entry_price(self, leader_address, leader_name, trade, market):
         price = float(trade.get('price', 0) or 0)
-        if price > config.MAX_ENTRY_PRICE:
+        # Per-leader max_entry_price override
+        leader_cfg = config.LEADERS.get(leader_address, {})
+        max_price = leader_cfg.get('max_entry_price', config.MAX_ENTRY_PRICE)
+        if price > max_price:
             return FilterResult(False, "price_too_high",
-                                {"price": price, "max": config.MAX_ENTRY_PRICE})
-        if price < config.MIN_ENTRY_PRICE:
+                                {"price": price, "max": max_price,
+                                 "override": max_price != config.MAX_ENTRY_PRICE})
+        # Per-leader min_entry_price override
+        leader_cfg = config.LEADERS.get(leader_address, {})
+        min_price = leader_cfg.get('min_entry_price', config.MIN_ENTRY_PRICE)
+
+        # Market-type-specific min price (e.g., esports requires 60¢+)
+        question = market.get('question', '')
+        market_type = classify_market(question, market)
+        rules = get_entry_rules(market_type)
+        market_min = rules.get('min_entry_price', 0)
+        if market_min > min_price:
+            min_price = market_min
+
+        if price < min_price:
             return FilterResult(False, "price_too_low",
-                                {"price": price, "min": config.MIN_ENTRY_PRICE})
+                                {"price": price, "min": min_price,
+                                 "market_type": market_type})
         return FilterResult(True, "price_ok", {"price": price})
 
     def _filter_leader_trade_size(self, leader_address, leader_name, trade, market):
         usdc = float(trade.get('usdcSize', 0) or 0)
-        if usdc < config.MIN_LEADER_TRADE_SIZE:
+        # Per-leader min_leader_trade_size override
+        leader_cfg = config.LEADERS.get(leader_address, {})
+        min_size = leader_cfg.get('min_leader_trade_size', config.MIN_LEADER_TRADE_SIZE)
+        if usdc < min_size:
             return FilterResult(False, "leader_trade_too_small",
-                                {"size": usdc, "min": config.MIN_LEADER_TRADE_SIZE})
+                                {"size": usdc, "min": min_size,
+                                 "override": min_size != config.MIN_LEADER_TRADE_SIZE})
         return FilterResult(True, "leader_size_ok", {"size": usdc})
 
     # ─── Market Quality ─────────────────────────────────
@@ -263,10 +284,20 @@ class FilterPipeline:
             return FilterResult(True, "duplicate_filter_disabled")
 
         cid = trade.get('conditionId', '')
-        if self.db.has_position_in_market(cid):
-            return FilterResult(False, "duplicate_position",
-                                {"condition_id": cid})
-        return FilterResult(True, "no_duplicate")
+        count = self.db.count_positions_in_market(cid)
+        max_buys = getattr(config, 'MAX_BUYS_PER_MARKET', 1)
+
+        # Esports: no double-downs (illiquid exits, binary outcomes)
+        question = market.get('question', '')
+        market_type = classify_market(question, market)
+        if is_esports(market_type):
+            max_buys = 1
+
+        if count >= max_buys:
+            return FilterResult(False, "max_buys_reached",
+                                {"condition_id": cid, "current": count, "max": max_buys,
+                                 "market_type": market_type})
+        return FilterResult(True, "double_down_allowed" if count > 0 else "no_duplicate")
 
     def _filter_recent_sell(self, leader_address, leader_name, trade, market):
         if not config.RECENT_SELL_CHECK:
@@ -381,6 +412,8 @@ class FilterPipeline:
         return FilterResult(True, "category_exposure_ok")
 
     def _filter_daily_loss_limit(self, leader_address, leader_name, trade, market):
+        if not config.DAILY_LOSS_LIMIT:
+            return FilterResult(True, "daily_loss_limit_disabled")
         daily_pnl = self.db.get_today_realized_pnl()
         if daily_pnl <= -config.DAILY_LOSS_LIMIT:
             return FilterResult(False, "daily_loss_limit_hit",

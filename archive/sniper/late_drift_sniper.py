@@ -55,7 +55,7 @@ CLOB_BASE = "https://clob.polymarket.com"
 # ═══════════════════════════════════════════════════════════════════
 
 # Entry timing
-ENTRY_WINDOW_START = 60    # Start looking at T-60s
+ENTRY_WINDOW_START = 80    # Start looking at T-80s
 ENTRY_WINDOW_END = 30      # Stop looking at T-30s (too late = no fill)
 POLL_INTERVAL = 3          # Seconds between checks in entry window
 
@@ -64,7 +64,7 @@ BASE_MIN_DRIFT_PCT = 0.0015   # 0.15% minimum absolute drift
 USE_VOL_ADJUSTED_DRIFT = True  # Scale drift threshold by current volatility
 
 # Polymarket requirements
-MAX_BUY_PRICE = 0.82      # Max price to pay for favored-side token
+MAX_BUY_PRICE = 0.86      # Max price to pay for favored-side token
 MIN_EDGE = 0.07            # 7% minimum edge over implied prob
 
 # Streak filter
